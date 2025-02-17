@@ -8,7 +8,7 @@
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PSL v2 for more details.
 
-package util
+package editor
 
 // Caret 插入符 \u2038。
 const Caret = "‸"
@@ -31,5 +31,16 @@ const CaretReplacement = "caretreplacement"
 // FrontEndCaret 前端插入符。
 const FrontEndCaret = "<wbr>"
 
-// FrontEndCaret 前端自动闭合插入符。
+// FrontEndCaretSelfClose 前端自动闭合插入符。
 const FrontEndCaretSelfClose = "<wbr/>"
+
+// IALValEscNewLine 属性值换行转义。
+const IALValEscNewLine = "_esc_newline_"
+
+const (
+	// Zwsp 零宽空格。
+	Zwsp = "\u200b"
+
+	// Zwj 零宽连字。
+	Zwj = "\u200d"
+)

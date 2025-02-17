@@ -15,8 +15,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/88250/lute/ast"
+	"github.com/88250/lute/editor"
 	"github.com/88250/lute/lex"
-	"github.com/88250/lute/util"
 )
 
 // delimiter 描述了强调、链接和图片解析过程中用到的分隔符（[, ![, *, _, ~）相关信息。
@@ -146,6 +146,18 @@ func (t *Tree) processEmphasis(stackBottom *delimiter, ctx *InlineContext) {
 				}
 			}
 
+			if !t.Context.ParseOption.InlineAsterisk {
+				if lex.ItemAsterisk == closercc {
+					break
+				}
+			}
+
+			if !t.Context.ParseOption.InlineUnderscore {
+				if lex.ItemUnderscore == closercc {
+					break
+				}
+			}
+
 			if t.Context.ParseOption.Mark {
 				if lex.ItemEqual == closercc && opener.num != closer.num {
 					break
@@ -194,7 +206,7 @@ func (t *Tree) processEmphasis(stackBottom *delimiter, ctx *InlineContext) {
 						emStrongDelMark.Type = ast.NodeSub
 						openMarker.Type = ast.NodeSubOpenMarker
 						closeMarker.Type = ast.NodeSubCloseMarker
-					} else if t.Context.ParseOption.GFMStrikethrough {
+					} else if t.Context.ParseOption.GFMStrikethrough && t.Context.ParseOption.GFMStrikethrough1 {
 						emStrongDelMark.Type = ast.NodeStrikethrough
 						openMarker.Type = ast.NodeStrikethrough1OpenMarker
 						closeMarker.Type = ast.NodeStrikethrough1CloseMarker
@@ -309,9 +321,9 @@ func (t *Tree) scanDelims(ctx *InlineContext) *delimiter {
 			tokenBefore = rune(c)
 		}
 
-		if (t.Context.ParseOption.VditorWYSIWYG || t.Context.ParseOption.VditorIR || t.Context.ParseOption.VditorSV || t.Context.ParseOption.ProtyleWYSIWYG) && util.Caret == string(tokenBefore) {
+		if (t.Context.ParseOption.VditorWYSIWYG || t.Context.ParseOption.VditorIR || t.Context.ParseOption.VditorSV || t.Context.ParseOption.ProtyleWYSIWYG) && editor.Caret == string(tokenBefore) {
 			// 跳过插入符位置向前看
-			caretLen := len(util.Caret)
+			caretLen := len(editor.Caret)
 			if 0 < startPos-caretLen {
 				c = ctx.tokens[startPos-caretLen-1]
 				if c >= utf8.RuneSelf {
@@ -368,10 +380,31 @@ func (t *Tree) scanDelims(ctx *InlineContext) *delimiter {
 		} else if t.Context.ParseOption.Sup && lex.ItemCaret == token && 1 != delimitersCount { // ^Sup^ 标记使用一个 ^
 			canOpen = false
 			canClose = false
-		} else if t.Context.ParseOption.Sub && lex.ItemTilde == token && 1 != delimitersCount { // ~Sub~ 标记使用一个 ~
-			canOpen = false
-			canClose = false
-			if t.Context.ParseOption.GFMStrikethrough && 2 == delimitersCount {
+		} else if t.Context.ParseOption.Sub && lex.ItemTilde == token {
+			if t.Context.ParseOption.GFMStrikethrough && 3 == delimitersCount { // 单独处理 ~~~foo~~~ 的情况，即下标嵌套删除线
+				canOpen = isLeftFlanking
+				canClose = isRightFlanking
+			} else if 1 != delimitersCount { // ~Sub~ 标记使用一个 ~
+				canOpen = false
+				canClose = false
+				if t.Context.ParseOption.GFMStrikethrough && 2 == delimitersCount {
+					canOpen = isLeftFlanking
+					canClose = isRightFlanking
+				}
+			} else {
+				canOpen = isLeftFlanking
+				canClose = isRightFlanking
+			}
+		} else if t.Context.ParseOption.GFMStrikethrough && lex.ItemTilde == token {
+			if 1 == delimitersCount {
+				if !t.Context.ParseOption.GFMStrikethrough1 {
+					canOpen = false
+					canClose = false
+				} else {
+					canOpen = isLeftFlanking
+					canClose = isRightFlanking
+				}
+			} else {
 				canOpen = isLeftFlanking
 				canClose = isRightFlanking
 			}

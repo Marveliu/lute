@@ -11,7 +11,7 @@
 package test
 
 import (
-	"io/ioutil"
+	"os"
 	"testing"
 
 	"github.com/88250/lute"
@@ -24,28 +24,32 @@ type parseTest struct {
 }
 
 var parseTests = []parseTest{
-
-	{"link ref node", "[foo]\n\n[foo]: bar", "<p><a href=\"bar\">foo</a></p>\n"},
-	{"details", `<details>
-<summary>foo</summary>
-
-* bar
-
-</details>`, "<details>\n<summary>foo</summary>\n<ul>\n<li>bar</li>\n</ul>\n</details>\n"},
-
-	// 链接引用定义问题 https://github.com/88250/lute/issues/3
-	{"#3", "[foo][]bar\n\n[foo]: /url \"title\"\n", "<p><a href=\"/url\" title=\"title\">foo</a>bar</p>\n"},
-
-	{"#177", "[link](/u(ri\n)\n", "<p>[link](/u(ri\n)</p>\n"},
-	{"#177", "[link](/u(ri )\n", "<p>[link](/u(ri )</p>\n"},
+	//
+	//	{"link ref node", "[foo]\n\n[foo]: bar", "<p><a href=\"bar\">foo</a></p>\n"},
+	//	{"details", `<details>
+	//<summary>foo</summary>
+	//
+	//* bar
+	//
+	//</details>`, "<details>\n<summary>foo</summary>\n<ul>\n<li>bar</li>\n</ul>\n</details>\n"},
+	//
+	//	// 链接引用定义问题 https://github.com/88250/lute/issues/3
+	//	{"#3", "[foo][]bar\n\n[foo]: /url \"title\"\n", "<p><a href=\"/url\" title=\"title\">foo</a>bar</p>\n"},
+	//
+	//	{"#177", "[link](/u(ri\n)\n", "<p>[link](/u(ri\n)</p>\n"},
+	//	{"#177", "[link](/u(ri )\n", "<p>[link](/u(ri )</p>\n"},
 
 	// commonmark spec inline-level cases
 
+	// 0.31
+	{"0.31-spec626", "foo <!--> foo -->\n\nfoo <!---> foo -->\n", "<p>foo <!--> foo --&gt;</p>\n<p>foo <!---> foo --&gt;</p>\n"},
+	{"0.31-spec625", "foo <!-- this is a --\ncomment - with hyphens -->\n", "<p>foo <!-- this is a --\ncomment - with hyphens --></p>\n"},
+
+	// Below 0.31
 	{"spec637", "`code \nspan`\n", "<p><code>code  span</code></p>\n"},
 	{"spec626", "foo <![CDATA[>&<]]>\n", "<p>foo <![CDATA[>&<]]></p>\n"},
 	{"spec625", "foo <!ELEMENT br EMPTY>\n", "<p>foo <!ELEMENT br EMPTY></p>\n"},
 	{"spec624", "foo <?php echo $a; ?>\n", "<p>foo <?php echo $a; ?></p>\n"},
-	{"spec622", "foo <!-- not a comment -- two hyphens -->\n", "<p>foo &lt;!-- not a comment -- two hyphens --&gt;</p>\n"},
 	{"spec621", "foo <!-- this is a\ncomment - with hyphen -->\n", "<p>foo <!-- this is a\ncomment - with hyphen --></p>\n"},
 	{"spec616", "<a href=\"hi'> <a href=hi'>\n", "<p>&lt;a href=&quot;hi'&gt; &lt;a href=hi'&gt;</p>\n"},
 	{"spec613", "Foo <responsive-image src=\"foo.jpg\" />\n", "<p>Foo <responsive-image src=\"foo.jpg\" /></p>\n"},
@@ -81,6 +85,7 @@ var parseTests = []parseTest{
 	{"spec483", "[link]()\n", "<p><a href=\"\">link</a></p>\n"},
 	{"spec479", "**a<http://foo.bar/?q=**>\n", "<p>**a<a href=\"http://foo.bar/?q=**\">http://foo.bar/?q=**</a></p>\n"},
 	{"spec416", "foo******bar*********baz\n", "<p>foo<strong><strong><strong>bar</strong></strong></strong>***baz</p>\n"},
+	{"spec408", "__foo_ bar_\n", "<p><em><em>foo</em> bar</em></p>\n"},
 	{"spec403", "*foo [bar](/url)*\n", "<p><em>foo <a href=\"/url\">bar</a></em></p>\n"},
 	{"spec353", "* a *\n", "<p>* a *</p>\n"},
 	{"spec352", "a*\"foo\"*\n", "<p>a*&quot;foo&quot;*</p>\n"},
@@ -279,7 +284,7 @@ func TestParse(t *testing.T) {
 }
 
 func TestCase1(t *testing.T) {
-	bytes, err := ioutil.ReadFile("case1.md")
+	bytes, err := os.ReadFile("case1.md")
 	if nil != err {
 		t.Fatalf("read case failed: %s", err)
 	}

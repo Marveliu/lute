@@ -25,7 +25,7 @@ import (
 	"github.com/gopherjs/gopherjs/js"
 )
 
-const Version = "1.7.3"
+const Version = "1.7.6"
 
 // Lute 描述了 Lute 引擎的顶层使用入口。
 type Lute struct {
@@ -47,18 +47,18 @@ type Lute struct {
 // New 创建一个新的 Lute 引擎。
 //
 // 默认启用的解析选项：
-//  * GFM 支持
-//  * 脚注
-//  * 标题自定义 ID
-//  * Emoji 别名替换，比如 :heart: 替换为 ❤️
-//  * YAML Front Matter
+//   - GFM 支持
+//   - 脚注
+//   - 标题自定义 ID
+//   - Emoji 别名替换，比如 :heart: 替换为 ❤️
+//   - YAML Front Matter
 //
 // 默认启用的渲染选项：
-//  * 软换行转硬换行
-//  * 代码块语法高亮
-//  * 中西文间插入空格
-//  * 修正术语拼写
-//  * 标题自定义 ID
+//   - 软换行转硬换行
+//   - 代码块语法高亮
+//   - 中西文间插入空格
+//   - 修正术语拼写
+//   - 标题自定义 ID
 func New(opts ...ParseOption) (ret *Lute) {
 	ret = &Lute{ParseOptions: parse.NewOptions(), RenderOptions: render.NewOptions()}
 	for _, opt := range opts {
@@ -151,6 +151,11 @@ func (lute *Lute) Space(text string) string {
 
 // IsValidLinkDest 判断 str 是否为合法的链接地址。
 func (lute *Lute) IsValidLinkDest(str string) bool {
+	str = strings.TrimSpace(str)
+	if strings.HasPrefix(str, "[") {
+		return false
+	}
+
 	luteEngine := New()
 	luteEngine.ParseOptions.GFMAutoLink = true
 	tree := parse.Parse("", []byte(str), luteEngine.ParseOptions)
@@ -166,8 +171,32 @@ func (lute *Lute) IsValidLinkDest(str string) bool {
 	return true
 }
 
+func (lute *Lute) GetLinkDest(str string) string {
+	str = strings.TrimSpace(str)
+	if strings.HasPrefix(str, "file://") {
+		return str
+	}
+
+	luteEngine := New()
+	luteEngine.ParseOptions.GFMAutoLink = true
+	tree := parse.Parse("", []byte(str), luteEngine.ParseOptions)
+	if nil == tree.Root.FirstChild || nil == tree.Root.FirstChild.FirstChild {
+		return ""
+	}
+	if tree.Root.LastChild != tree.Root.FirstChild {
+		return ""
+	}
+	if ast.NodeLink != tree.Root.FirstChild.FirstChild.Type {
+		return ""
+	}
+	return tree.Root.FirstChild.FirstChild.ChildByType(ast.NodeLinkDest).TokensStr()
+}
+
 // GetEmojis 返回 Emoji 别名和对应 Unicode 字符的字典列表。
 func (lute *Lute) GetEmojis() (ret map[string]string) {
+	parse.EmojiLock.Lock()
+	defer parse.EmojiLock.Unlock()
+
 	ret = make(map[string]string, len(lute.ParseOptions.AliasEmoji))
 	placeholder := util.BytesToStr(parse.EmojiSitePlaceholder)
 	for k, v := range lute.ParseOptions.AliasEmoji {
@@ -179,12 +208,10 @@ func (lute *Lute) GetEmojis() (ret map[string]string) {
 	return
 }
 
-var emojiLock = sync.Mutex{}
-
 // PutEmojis 将指定的 emojiMap 合并覆盖已有的 Emoji 字典。
 func (lute *Lute) PutEmojis(emojiMap map[string]string) {
-	emojiLock.Lock()
-	defer emojiLock.Unlock()
+	parse.EmojiLock.Lock()
+	defer parse.EmojiLock.Unlock()
 
 	for k, v := range emojiMap {
 		lute.ParseOptions.AliasEmoji[k] = v
@@ -194,6 +221,9 @@ func (lute *Lute) PutEmojis(emojiMap map[string]string) {
 
 // RemoveEmoji 用于删除 str 中的 Emoji Unicode。
 func (lute *Lute) RemoveEmoji(str string) string {
+	parse.EmojiLock.Lock()
+	defer parse.EmojiLock.Unlock()
+
 	for u := range lute.ParseOptions.EmojiAlias {
 		str = strings.ReplaceAll(str, u, "")
 	}
@@ -207,10 +237,6 @@ func (lute *Lute) GetTerms() map[string]string {
 
 // PutTerms 将制定的 termMap 合并覆盖已有的术语字典。
 func (lute *Lute) PutTerms(termMap map[string]string) {
-	if nil == lute.RenderOptions.Terms {
-		lute.RenderOptions.Terms = render.NewTerms()
-	}
-
 	for k, v := range termMap {
 		lute.RenderOptions.Terms[k] = v
 	}
@@ -221,7 +247,6 @@ var (
 	formatRendererLock = sync.Mutex{}
 )
 
-// FormatNodeSync 使用指定的 options 格式化 node，返回格式化后的 Markdown 文本。
 func FormatNodeSync(node *ast.Node, parseOptions *parse.Options, renderOptions *render.Options) (ret string, err error) {
 	formatRendererLock.Lock()
 	defer formatRendererLock.Unlock()
@@ -248,6 +273,40 @@ func FormatNodeSync(node *ast.Node, parseOptions *parse.Options, renderOptions *
 	formatRendererSync.Options = nil
 	formatRendererSync.Writer.Reset()
 	formatRendererSync.NodeWriterStack = nil
+	return
+}
+
+var (
+	protyleExportMdRendererSync = render.NewProtyleExportMdRenderer(nil, nil)
+	protyleExportMdRendererLock = sync.Mutex{}
+)
+
+func ProtyleExportMdNodeSync(node *ast.Node, parseOptions *parse.Options, renderOptions *render.Options) (ret string, err error) {
+	protyleExportMdRendererLock.Lock()
+	defer protyleExportMdRendererLock.Unlock()
+	defer util.RecoverPanic(&err)
+
+	root := &ast.Node{Type: ast.NodeDocument}
+	tree := &parse.Tree{Root: root, Context: &parse.Context{ParseOption: parseOptions}}
+	protyleExportMdRendererSync.Tree = tree
+	protyleExportMdRendererSync.Options = renderOptions
+	protyleExportMdRendererSync.LastOut = lex.ItemNewline
+	protyleExportMdRendererSync.NodeWriterStack = []*bytes.Buffer{protyleExportMdRendererSync.Writer}
+
+	ast.Walk(node, func(n *ast.Node, entering bool) ast.WalkStatus {
+		rendererFunc := protyleExportMdRendererSync.RendererFuncs[n.Type]
+		if nil == rendererFunc {
+			err = errors.New("not found renderer for node [type=" + n.Type.String() + "]")
+			return ast.WalkStop
+		}
+		return rendererFunc(n, entering)
+	})
+
+	ret = strings.TrimSpace(protyleExportMdRendererSync.Writer.String())
+	protyleExportMdRendererSync.Tree = nil
+	protyleExportMdRendererSync.Options = nil
+	protyleExportMdRendererSync.Writer.Reset()
+	protyleExportMdRendererSync.NodeWriterStack = nil
 	return
 }
 
@@ -284,6 +343,10 @@ func (lute *Lute) SetGFMTaskListItemClass(class string) {
 
 func (lute *Lute) SetGFMStrikethrough(b bool) {
 	lute.ParseOptions.GFMStrikethrough = b
+}
+
+func (lute *Lute) SetGFMStrikethrough1(b bool) {
+	lute.ParseOptions.GFMStrikethrough1 = b
 }
 
 func (lute *Lute) SetGFMAutoLink(b bool) {
@@ -376,6 +439,10 @@ func (lute *Lute) SetVditorSV(b bool) {
 	lute.RenderOptions.VditorSV = b
 }
 
+func (lute *Lute) SetInlineMath(b bool) {
+	lute.ParseOptions.InlineMath = b
+}
+
 func (lute *Lute) SetInlineMathAllowDigitAfterOpenMarker(b bool) {
 	lute.ParseOptions.InlineMathAllowDigitAfterOpenMarker = b
 }
@@ -408,6 +475,8 @@ func (lute *Lute) SetRenderListStyle(b bool) {
 	lute.RenderOptions.RenderListStyle = b
 }
 
+// SetSanitize 设置为 true 时表示对输出进行 XSS 过滤。
+// 注意：Lute 目前的实现存在一些漏洞，请不要依赖它来防御 XSS 攻击。
 func (lute *Lute) SetSanitize(b bool) {
 	lute.RenderOptions.Sanitize = b
 }
@@ -482,6 +551,14 @@ func (lute *Lute) SetSub(b bool) {
 	lute.ParseOptions.Sub = b
 }
 
+func (lute *Lute) SetInlineAsterisk(b bool) {
+	lute.ParseOptions.InlineAsterisk = b
+}
+
+func (lute *Lute) SetInlineUnderscore(b bool) {
+	lute.ParseOptions.InlineUnderscore = b
+}
+
 func (lute *Lute) SetGitConflict(b bool) {
 	lute.ParseOptions.GitConflict = b
 }
@@ -494,6 +571,22 @@ func (lute *Lute) SetIndentCodeBlock(b bool) {
 	lute.ParseOptions.IndentCodeBlock = b
 }
 
+func (lute *Lute) SetDataImage(b bool) {
+	lute.ParseOptions.DataImage = b
+}
+
+func (lute *Lute) SetTextMark(b bool) {
+	lute.ParseOptions.TextMark = b
+}
+
+func (lute *Lute) SetSpin(b bool) {
+	lute.ParseOptions.Spin = b
+}
+
+func (lute *Lute) SetHTMLTag2TextMark(b bool) {
+	lute.ParseOptions.HTMLTag2TextMark = b
+}
+
 func (lute *Lute) SetParagraphBeginningSpace(b bool) {
 	lute.ParseOptions.ParagraphBeginningSpace = b
 	lute.RenderOptions.KeepParagraphBeginningSpace = b
@@ -501,6 +594,10 @@ func (lute *Lute) SetParagraphBeginningSpace(b bool) {
 
 func (lute *Lute) SetProtyleMarkNetImg(b bool) {
 	lute.RenderOptions.ProtyleMarkNetImg = b
+}
+
+func (lute *Lute) SetSpellcheck(b bool) {
+	lute.RenderOptions.Spellcheck = b
 }
 
 func (lute *Lute) SetJSRenderers(options map[string]map[string]*js.Object) {
@@ -537,6 +634,7 @@ func (lute *Lute) SetJSRenderers(options map[string]map[string]*js.Object) {
 			panic("unknown ext renderer func [" + rendererType + "]")
 		}
 
+		extRenderer := extRenderer // https://go.dev/blog/loopvar-preview
 		renderFuncs := extRenderer.Interface().(map[string]interface{})
 		for funcName := range renderFuncs {
 			nodeType := "Node" + funcName[len("render"):]

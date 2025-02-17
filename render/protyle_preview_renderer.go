@@ -13,10 +13,12 @@ package render
 import (
 	"bytes"
 	"strconv"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/88250/lute/ast"
+	"github.com/88250/lute/editor"
 	"github.com/88250/lute/html"
 	"github.com/88250/lute/lex"
 	"github.com/88250/lute/parse"
@@ -160,27 +162,87 @@ func NewProtylePreviewRenderer(tree *parse.Tree, options *Options) *ProtylePrevi
 	ret.RendererFuncs[ast.NodeUnderlineCloseMarker] = ret.renderUnderlineCloseMarker
 	ret.RendererFuncs[ast.NodeBr] = ret.renderBr
 	ret.RendererFuncs[ast.NodeTextMark] = ret.renderTextMark
-	ret.RendererFuncs[ast.NodeTextMarkOpenMarker] = ret.renderTextMarkOpenMarker
-	ret.RendererFuncs[ast.NodeTextMarkCloseMarker] = ret.renderTextMarkCloseMarker
+	ret.RendererFuncs[ast.NodeAttributeView] = ret.renderCustomBlock
 	return ret
 }
 
-func (r *ProtylePreviewRenderer) renderTextMark(node *ast.Node, entering bool) ast.WalkStatus {
-	return ast.WalkContinue
-}
-
-func (r *ProtylePreviewRenderer) renderTextMarkOpenMarker(node *ast.Node, entering bool) ast.WalkStatus {
+func (r *ProtylePreviewRenderer) renderCustomBlock(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
-		r.WriteString("<span data-type=\"")
-		r.Write(node.Tokens)
-		r.WriteString("\">")
+		r.Newline()
+		r.Tag("div", [][]string{
+			{"data-type", "NodeCustomBlock"},
+			{"data-info", node.CustomBlockInfo},
+			{"data-content", string(html.EscapeHTML(node.Tokens))},
+		}, false)
+		r.WriteString("</div>")
+		r.Newline()
 	}
 	return ast.WalkContinue
 }
 
-func (r *ProtylePreviewRenderer) renderTextMarkCloseMarker(node *ast.Node, entering bool) ast.WalkStatus {
+func (r *ProtylePreviewRenderer) renderAttributeView(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
-		r.WriteString("</span>")
+		r.Newline()
+		r.Tag("div", [][]string{
+			{"data-type", "NodeAttributeView"},
+			{"data-av-id", node.AttributeViewID},
+			{"data-av-type", node.AttributeViewType},
+		}, false)
+		r.WriteString("</div>")
+		r.Newline()
+	}
+	return ast.WalkContinue
+}
+
+func (r *ProtylePreviewRenderer) renderTextMark(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		textContent := node.TextMarkTextContent
+		if node.ParentIs(ast.NodeTableCell) {
+			if node.IsTextMarkType("code") {
+				textContent = strings.ReplaceAll(textContent, "|", "&#124;")
+			} else {
+				textContent = strings.ReplaceAll(textContent, "\\|", "|")
+			}
+			textContent = strings.ReplaceAll(textContent, "\n", "<br />")
+		}
+
+		if node.IsTextMarkType("a") {
+			attrs := [][]string{{"href", node.TextMarkAHref}}
+			if "" != node.TextMarkATitle {
+				attrs = append(attrs, []string{"title", node.TextMarkATitle})
+			}
+			r.spanNodeAttrs(node, &attrs)
+			r.Tag("a", attrs, false)
+			r.WriteString(textContent)
+			r.WriteString("</a>")
+		} else if node.IsTextMarkType("inline-memo") {
+			r.WriteString(textContent)
+
+			if node.IsNextSameInlineMemo() {
+				return ast.WalkContinue
+			}
+
+			lastRune, _ := utf8.DecodeLastRuneInString(node.TextMarkTextContent)
+			if isCJK(lastRune) {
+				r.WriteString("<sup>（")
+				memo := node.TextMarkInlineMemoContent
+				memo = strings.ReplaceAll(memo, editor.IALValEscNewLine, " ")
+				r.WriteString(memo)
+				r.WriteString("）</sup>")
+			} else {
+				r.WriteString("<sup>(")
+				memo := node.TextMarkInlineMemoContent
+				memo = strings.ReplaceAll(memo, editor.IALValEscNewLine, " ")
+				r.WriteString(memo)
+				r.WriteString(")</sup>")
+			}
+		} else {
+			attrs := r.renderTextMarkAttrs(node)
+			r.spanNodeAttrs(node, &attrs)
+			r.Tag("span", attrs, false)
+			r.WriteString(textContent)
+			r.WriteString("</span>")
+		}
 	}
 	return ast.WalkContinue
 }
@@ -284,11 +346,6 @@ func (r *ProtylePreviewRenderer) renderWidget(node *ast.Node, entering bool) ast
 	return ast.WalkContinue
 }
 
-func (r *ProtylePreviewRenderer) Render() (output []byte) {
-	output = r.BaseRenderer.Render()
-	return
-}
-
 func (r *ProtylePreviewRenderer) renderGitConflictCloseMarker(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
 		r.Write(node.Tokens)
@@ -317,7 +374,6 @@ func (r *ProtylePreviewRenderer) renderGitConflict(node *ast.Node, entering bool
 	r.Newline()
 	if entering {
 		attrs := [][]string{{"class", "language-git-conflict"}}
-		r.handleKramdownBlockIAL(node)
 		attrs = append(attrs, node.KramdownIAL...)
 		r.Tag("div", attrs, false)
 	} else {
@@ -480,6 +536,14 @@ func (r *ProtylePreviewRenderer) renderBlockRef(node *ast.Node, entering bool) a
 	return ast.WalkContinue
 }
 
+func (r *ProtylePreviewRenderer) escapeRefText(refText string) string {
+	refText = strings.ReplaceAll(refText, ">", "&gt;")
+	refText = strings.ReplaceAll(refText, "<", "&lt;")
+	refText = strings.ReplaceAll(refText, "\"", "&quot;")
+	refText = strings.ReplaceAll(refText, "'", "&apos;")
+	return refText
+}
+
 func (r *ProtylePreviewRenderer) renderBlockRefID(node *ast.Node, entering bool) ast.WalkStatus {
 	return ast.WalkContinue
 }
@@ -586,7 +650,7 @@ func (r *ProtylePreviewRenderer) renderFootnotesRef(node *ast.Node, entering boo
 		idx, _ := r.Tree.FindFootnotesDef(node.Tokens)
 		idxStr := strconv.Itoa(idx)
 		r.Tag("sup", [][]string{{"class", "footnotes-ref"}, {"id", "footnotes-ref-" + node.FootnotesRefId}}, false)
-		r.Tag("a", [][]string{{"href", "#footnotes-def-" + idxStr}}, false)
+		r.Tag("a", [][]string{{"href", r.Options.LinkBase + "#footnotes-def-" + idxStr}}, false)
 		r.WriteString(idxStr)
 		r.Tag("/a", nil, false)
 		r.Tag("/sup", nil, false)
@@ -610,7 +674,7 @@ func (r *ProtylePreviewRenderer) renderFootnotesDef(node *ast.Node, entering boo
 		// r.WriteString("<li id=\"footnotes-def-" + node.FootnotesRefId + "\">")
 		// 在 li 上带 id 后，Pandoc HTML 转换 Docx 会有问题
 		r.WriteString("<li>")
-		if 0 < len(node.FootnotesRefs) {
+		if 0 < len(node.FootnotesRefs) && nil != node.FirstChild {
 			refId := node.FootnotesRefs[0].FootnotesRefId
 			node.FirstChild.PrependChild(&ast.Node{Type: ast.NodeInlineHTML, Tokens: []byte("<span id=\"footnotes-def-" + refId + "\"></span>")})
 		}
@@ -627,14 +691,14 @@ func (r *ProtylePreviewRenderer) renderCodeBlock(node *ast.Node, entering bool) 
 	var language string
 	if nil != node.FirstChild.Next && 0 < len(node.FirstChild.Next.CodeBlockInfo) {
 		language = util.BytesToStr(node.FirstChild.Next.CodeBlockInfo)
-		noHighlight = r.NoHighlight(language)
+		noHighlight = NoHighlight(language)
 	}
 
 	if entering {
 		if noHighlight {
 			var attrs [][]string
 			tokens := html.EscapeHTML(node.FirstChild.Next.Next.Tokens)
-			tokens = bytes.ReplaceAll(tokens, util.CaretTokens, nil)
+			tokens = bytes.ReplaceAll(tokens, editor.CaretTokens, nil)
 			tokens = bytes.TrimSpace(tokens)
 			attrs = append(attrs, []string{"data-content", util.BytesToStr(tokens)})
 			attrs = append(attrs, []string{"data-subtype", language})
@@ -646,8 +710,17 @@ func (r *ProtylePreviewRenderer) renderCodeBlock(node *ast.Node, entering bool) 
 		}
 
 		attrs := [][]string{{"class", "code-block"}, {"data-language", language}}
+		if "true" == node.IALAttr("linewrap") {
+			attrs = append(attrs, []string{"linewrap", "true"})
+		}
+		if "true" == node.IALAttr("ligatures") {
+			attrs = append(attrs, []string{"ligatures", "true"})
+		}
+		if "true" == node.IALAttr("linenumber") {
+			attrs = append(attrs, []string{"linenumber", "true"})
+		}
 		r.Tag("pre", attrs, false)
-		r.WriteString("<code>")
+		r.WriteString("<code class=\"hljs\">")
 	} else {
 		if noHighlight {
 			return ast.WalkSkipChildren
@@ -714,7 +787,7 @@ func (r *ProtylePreviewRenderer) renderInlineMathContent(node *ast.Node, enterin
 func (r *ProtylePreviewRenderer) renderInlineMathOpenMarker(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
 		tokens := html.EscapeHTML(node.Next.Tokens)
-		r.Tag("span", [][]string{{"data-subtype", "math"}, {"data-content", util.BytesToStr(tokens)}}, false)
+		r.Tag("span", [][]string{{"data-type", "inline-math"}, {"data-subtype", "math"}, {"data-content", util.BytesToStr(tokens)}}, false)
 	}
 	return ast.WalkContinue
 }
@@ -745,7 +818,7 @@ func (r *ProtylePreviewRenderer) renderMathBlock(node *ast.Node, entering bool) 
 	if entering {
 		var attrs [][]string
 		tokens := html.EscapeHTML(node.FirstChild.Next.Tokens)
-		tokens = bytes.ReplaceAll(tokens, util.CaretTokens, nil)
+		tokens = bytes.ReplaceAll(tokens, editor.CaretTokens, nil)
 		tokens = bytes.TrimSpace(tokens)
 		attrs = append(attrs, []string{"data-content", util.BytesToStr(tokens)})
 		attrs = append(attrs, []string{"data-subtype", "math"})
@@ -809,7 +882,6 @@ func (r *ProtylePreviewRenderer) renderTableHead(node *ast.Node, entering bool) 
 
 func (r *ProtylePreviewRenderer) renderTable(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
-		r.handleKramdownBlockIAL(node)
 		r.Tag("table", node.KramdownIAL, false)
 		r.Newline()
 	} else {
@@ -874,13 +946,9 @@ func (r *ProtylePreviewRenderer) renderLinkSpace(node *ast.Node, entering bool) 
 
 func (r *ProtylePreviewRenderer) renderLinkText(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
-		var tokens []byte
-		if r.Options.AutoSpace {
-			tokens = r.Space(node.Tokens)
-		} else {
-			tokens = node.Tokens
+		if ast.NodeImage != node.Parent.Type {
+			r.Write(html.EscapeHTML(node.Tokens))
 		}
-		r.Write(html.EscapeHTML(tokens))
 	}
 	return ast.WalkContinue
 }
@@ -923,48 +991,81 @@ func (r *ProtylePreviewRenderer) renderBang(node *ast.Node, entering bool) ast.W
 
 func (r *ProtylePreviewRenderer) renderImage(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
-		if 0 == r.DisableTags {
-			attrs := [][]string{{"class", "img"}}
-			if style := node.IALAttr("parent-style"); "" != style {
-				attrs = append(attrs, []string{"style", style})
+		attrs := [][]string{{"contenteditable", "false"}, {"data-type", "img"}, {"class", "img"}}
+		parentStyle := node.IALAttr("parent-style")
+		if "" != parentStyle { // 手动设置了位置
+			parentStyle = strings.ReplaceAll(parentStyle, "display: block;", "")
+			parentStyle = strings.TrimSpace(parentStyle)
+			if "" != parentStyle {
+				attrs = append(attrs, []string{"style", parentStyle})
 			}
-			r.Tag("span", attrs, false)
-			r.WriteString("<img src=\"")
-			destTokens := node.ChildByType(ast.NodeLinkDest).Tokens
-			destTokens = r.LinkPath(destTokens)
-			if "" != r.Options.ImageLazyLoading {
-				r.Write(html.EscapeHTML(util.StrToBytes(r.Options.ImageLazyLoading)))
-				r.WriteString("\" data-src=\"")
-			}
-			r.Write(html.EscapeHTML(destTokens))
-			r.WriteString("\" alt=\"")
 		}
-		r.DisableTags++
-		return ast.WalkContinue
-	}
+		if r.LastOut == '\n' {
+			r.WriteString(editor.Zwsp)
+		}
+		r.Tag("span", attrs, false)
+		r.Tag("span", nil, false)
+		r.WriteString(" ")
+		r.Tag("/span", nil, false)
+		attrs = [][]string{}
+		if style := node.IALAttr("style"); "" != style {
+			styles := strings.Split(style, ";")
+			var width string
+			for _, s := range styles {
+				if strings.Contains(s, "width") {
+					width = s
+					break
+				}
+			}
+			width = strings.ReplaceAll(width, "vw", "%")
+			width = strings.TrimSpace(width)
+			if "" != width {
+				width += ";"
+				attrs = append(attrs, []string{"style", width})
+			}
+		}
+		r.Tag("span", attrs, false)
+		r.Tag("span", [][]string{{"class", "protyle-action protyle-icons"}}, false)
+		r.WriteString("<span class=\"protyle-icon protyle-icon--only\"><svg class=\"svg\"><use xlink:href=\"#iconMore\"></use></svg></span>")
+		r.Tag("/span", nil, false)
+	} else {
+		destTokens := node.ChildByType(ast.NodeLinkDest).Tokens
+		if r.Options.Sanitize {
+			destTokens = sanitize(destTokens)
+		}
+		destTokens = bytes.ReplaceAll(destTokens, editor.CaretTokens, nil)
+		dataSrcTokens := destTokens
+		dataSrc := util.BytesToStr(dataSrcTokens)
+		src := util.BytesToStr(r.LinkPath(destTokens))
+		attrs := [][]string{{"src", src}, {"data-src", dataSrc}}
+		alt := node.ChildByType(ast.NodeLinkText)
+		if nil != alt && 0 < len(alt.Tokens) {
+			attrs = append(attrs, []string{"alt", util.BytesToStr(alt.Tokens)})
+		}
 
-	r.DisableTags--
-	if 0 == r.DisableTags {
-		r.WriteByte(lex.ItemDoublequote)
 		title := node.ChildByType(ast.NodeLinkTitle)
 		var titleTokens []byte
-		if nil != title && nil != title.Tokens {
-			titleTokens = html.EscapeHTML(title.Tokens)
-			r.WriteString(" title=\"")
-			r.Write(titleTokens)
-			r.WriteByte(lex.ItemDoublequote)
+		if nil != title && 0 < len(title.Tokens) {
+			titleTokens = title.Tokens
+			attrs = append(attrs, []string{"title", r.escapeRefText(string(titleTokens))})
 		}
-		ial := r.NodeAttrsStr(node)
-		if "" != ial {
-			r.WriteString(" " + ial)
+		if style := node.IALAttr("style"); "" != style {
+			styles := strings.Split(style, ";")
+			var width string
+			for _, s := range styles {
+				if strings.Contains(s, "width") {
+					width = s
+				}
+			}
+			style = strings.ReplaceAll(style, width+";", "")
+			style = strings.ReplaceAll(style, "flex: 0 0 auto;", "")
+			style = strings.ReplaceAll(style, "display: block;", "")
+			style = strings.TrimSpace(style)
+			if "" != style {
+				attrs = append(attrs, []string{"style", style})
+			}
 		}
-		r.WriteString(" />")
-		if 0 < len(titleTokens) {
-			r.Tag("span", [][]string{{"class", "protyle-action__title"}}, false)
-			r.Write(titleTokens)
-			r.Tag("/span", nil, false)
-		}
-		r.Tag("/span", nil, false)
+		r.Tag("img", attrs, true)
 
 		buf := r.Writer.Bytes()
 		idx := bytes.LastIndex(buf, []byte("<img src="))
@@ -972,8 +1073,28 @@ func (r *ProtylePreviewRenderer) renderImage(node *ast.Node, entering bool) ast.
 		if r.Options.Sanitize {
 			imgBuf = sanitize(imgBuf)
 		}
+		imgBuf = r.tagSrcPath(imgBuf)
 		r.Writer.Truncate(idx)
 		r.Writer.Write(imgBuf)
+
+		r.Tag("span", [][]string{{"class", "protyle-action__drag"}}, false)
+		r.Tag("/span", nil, false)
+
+		if r.Options.ProtyleMarkNetImg && !bytes.HasPrefix(dataSrcTokens, []byte("assets/")) {
+			r.WriteString("<span class=\"img__net\"><svg><use xlink:href=\"#iconLanguage\"></use></svg></span>")
+		}
+
+		attrs = [][]string{{"class", "protyle-action__title"}}
+		r.Tag("span", attrs, false)
+		r.Tag("span", nil, false)
+		r.Writer.Write(html.EscapeHTML(titleTokens))
+		r.Tag("/span", nil, false)
+		r.Tag("/span", nil, false)
+		r.Tag("/span", nil, false)
+		r.Tag("span", nil, false)
+		r.WriteString(" ")
+		r.Tag("/span", nil, false)
+		r.Tag("/span", nil, false)
 	}
 	return ast.WalkContinue
 }
@@ -984,6 +1105,13 @@ func (r *ProtylePreviewRenderer) renderLink(node *ast.Node, entering bool) ast.W
 
 		dest := node.ChildByType(ast.NodeLinkDest)
 		destTokens := dest.Tokens
+		if r.Options.Sanitize {
+			tokens := bytes.TrimSpace(destTokens)
+			tokens = bytes.ToLower(tokens)
+			if bytes.HasPrefix(tokens, []byte("javascript:")) {
+				destTokens = nil
+			}
+		}
 		destTokens = r.LinkPath(destTokens)
 		attrs := [][]string{{"href", util.BytesToStr(html.EscapeHTML(destTokens))}}
 		if title := node.ChildByType(ast.NodeLinkTitle); nil != title && nil != title.Tokens {
@@ -1030,12 +1158,13 @@ func (r *ProtylePreviewRenderer) renderDocument(node *ast.Node, entering bool) a
 func (r *ProtylePreviewRenderer) renderParagraph(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
 		r.Newline()
-		r.handleKramdownBlockIAL(node)
 		var attrs [][]string
 		attrs = append(attrs, node.KramdownIAL...)
 		r.Tag("p", attrs, false)
 		if r.Options.ChineseParagraphBeginningSpace && ast.NodeDocument == node.Parent.Type {
-			r.WriteString("　　")
+			if !r.ParagraphContainImgOnly(node) {
+				r.WriteString("　　")
+			}
 		}
 	} else {
 		r.Tag("/p", nil, false)
@@ -1178,7 +1307,6 @@ func (r *ProtylePreviewRenderer) renderStrongU8eCloseMarker(node *ast.Node, ente
 func (r *ProtylePreviewRenderer) renderBlockquote(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
 		r.Newline()
-		r.handleKramdownBlockIAL(node)
 		r.Tag("blockquote", node.KramdownIAL, false)
 		r.Newline()
 	} else {
@@ -1198,12 +1326,15 @@ func (r *ProtylePreviewRenderer) renderHeading(node *ast.Node, entering bool) as
 		r.Newline()
 		level := headingLevel[node.HeadingLevel : node.HeadingLevel+1]
 		r.WriteString("<h" + level)
-		id := HeadingID(node)
+		id := node.ID
+		if "" == id {
+			id = HeadingID(node)
+		}
 		if r.Options.ToC || r.Options.HeadingID || r.Options.KramdownBlockIAL {
 			r.WriteString(" id=\"" + id + "\"")
 			if r.Options.KramdownBlockIAL {
 				if "id" != r.Options.KramdownIALIDRenderName && 0 < len(node.KramdownIAL) {
-					r.WriteString(" " + r.Options.KramdownIALIDRenderName + "=\"" + node.KramdownIAL[0][1] + "\"")
+					r.WriteString(" " + r.Options.KramdownIALIDRenderName + "=\"" + node.HeadingNormalizedID + "\"")
 				}
 				if 1 < len(node.KramdownIAL) {
 					exceptID := node.KramdownIAL[1:]
@@ -1247,7 +1378,6 @@ func (r *ProtylePreviewRenderer) renderList(node *ast.Node, entering bool) ast.W
 		if 0 == node.ListData.BulletChar && 1 != node.ListData.Start {
 			attrs = append(attrs, []string{"start", strconv.Itoa(node.ListData.Start)})
 		}
-		r.handleKramdownBlockIAL(node)
 		attrs = append(attrs, node.KramdownIAL...)
 		r.Tag(tag, attrs, false)
 		r.Newline()
@@ -1262,7 +1392,6 @@ func (r *ProtylePreviewRenderer) renderList(node *ast.Node, entering bool) ast.W
 func (r *ProtylePreviewRenderer) renderListItem(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
 		var attrs [][]string
-		r.handleKramdownBlockIAL(node)
 		attrs = append(attrs, node.KramdownIAL...)
 		if 3 == node.ListData.Typ && nil != node.FirstChild && ((ast.NodeTaskListItemMarker == node.FirstChild.Type) ||
 			(nil != node.FirstChild.FirstChild && ast.NodeTaskListItemMarker == node.FirstChild.FirstChild.Type)) {
@@ -1325,9 +1454,50 @@ func (r *ProtylePreviewRenderer) renderSoftBreak(node *ast.Node, entering bool) 
 	return ast.WalkContinue
 }
 
-func (r *ProtylePreviewRenderer) handleKramdownBlockIAL(node *ast.Node) {
-	if r.Options.KramdownBlockIAL && "id" != r.Options.KramdownIALIDRenderName && 0 < len(node.KramdownIAL) {
-		// 第一项必须是 ID
-		node.KramdownIAL[0][0] = r.Options.KramdownIALIDRenderName
+func (r *ProtylePreviewRenderer) renderTextMarkAttrs(node *ast.Node) (attrs [][]string) {
+	attrs = [][]string{{"data-type", node.TextMarkType}}
+
+	types := strings.Split(node.TextMarkType, " ")
+	for _, typ := range types {
+		if "block-ref" == typ {
+			attrs = append(attrs, []string{"data-subtype", node.TextMarkBlockRefSubtype})
+			attrs = append(attrs, []string{"data-id", node.TextMarkBlockRefID})
+		} else if "a" == typ {
+			href := node.TextMarkAHref
+			href = string(r.LinkPath([]byte(href)))
+
+			attrs = append(attrs, []string{"data-href", href})
+			if "" != node.TextMarkATitle {
+				attrs = append(attrs, []string{"data-title", node.TextMarkATitle})
+			}
+		} else if "inline-math" == typ {
+			attrs = append(attrs, []string{"data-subtype", "math"})
+			content := node.TextMarkInlineMathContent
+			if node.ParentIs(ast.NodeTableCell) {
+				// Improve the handling of inline-math containing `|` in the table https://github.com/siyuan-note/siyuan/issues/9227
+				content = strings.ReplaceAll(content, "|", "&#124;")
+				content = strings.ReplaceAll(content, "\n", "<br/>")
+			}
+			content = strings.ReplaceAll(content, editor.IALValEscNewLine, "\n")
+			attrs = append(attrs, []string{"data-content", content})
+			attrs = append(attrs, []string{"contenteditable", "false"})
+			attrs = append(attrs, []string{"class", "render-node"})
+		} else if "file-annotation-ref" == typ {
+			attrs = append(attrs, []string{"data-id", node.TextMarkFileAnnotationRefID})
+		} else if "inline-memo" == typ {
+			content := node.TextMarkInlineMemoContent
+			content = strings.ReplaceAll(content, editor.IALValEscNewLine, "\n")
+			attrs = append(attrs, []string{"data-inline-memo-content", content})
+		}
 	}
+	return
+}
+
+func (r *ProtylePreviewRenderer) spanNodeAttrs(node *ast.Node, attrs *[][]string) {
+	*attrs = append(*attrs, node.KramdownIAL...)
+}
+
+func (r *ProtylePreviewRenderer) Render() (output []byte) {
+	output = r.BaseRenderer.Render()
+	return
 }

@@ -14,6 +14,7 @@ import (
 	"bytes"
 
 	"github.com/88250/lute/ast"
+	"github.com/88250/lute/editor"
 	"github.com/88250/lute/lex"
 	"github.com/88250/lute/util"
 )
@@ -59,8 +60,8 @@ func MathBlockContinue(mathBlock *ast.Node, context *Context) int {
 
 var MathBlockMarker = util.StrToBytes("$$")
 var MathBlockMarkerNewline = util.StrToBytes("$$\n")
-var MathBlockMarkerCaret = util.StrToBytes("$$" + util.Caret)
-var MathBlockMarkerCaretNewline = util.StrToBytes("$$" + util.Caret + "\n")
+var MathBlockMarkerCaret = util.StrToBytes("$$" + editor.Caret)
+var MathBlockMarkerCaretNewline = util.StrToBytes("$$" + editor.Caret + "\n")
 
 func (context *Context) mathBlockFinalize(mathBlock *ast.Node) {
 	if 2 > len(mathBlock.Tokens) {
@@ -83,12 +84,20 @@ func (context *Context) mathBlockFinalize(mathBlock *ast.Node) {
 			// 剔除结尾的 $$‸
 			tokens = bytes.TrimSuffix(tokens, MathBlockMarkerCaret)
 			// 把 Vditor 插入符移动到内容末尾
-			tokens = append(tokens, util.CaretTokens...)
+			tokens = append(tokens, editor.CaretTokens...)
 		}
 	}
 	if bytes.HasSuffix(tokens, MathBlockMarker) {
 		tokens = tokens[:len(tokens)-2] // 剔除结尾的 $$
 	}
+	if bytes.Contains(tokens, []byte("<span data-type=")) {
+		// 行级元素转换为块级元素 https://ld246.com/article/1730804245164
+		inlineTree := Inline("", tokens, context.ParseOption)
+		if nil != inlineTree {
+			tokens = []byte(inlineTree.Root.Content())
+		}
+	}
+
 	mathBlock.Tokens = nil
 	mathBlock.AppendChild(&ast.Node{Type: ast.NodeMathBlockOpenMarker})
 	mathBlock.AppendChild(&ast.Node{Type: ast.NodeMathBlockContent, Tokens: tokens})
@@ -117,6 +126,7 @@ func (context *Context) isMathBlockClose(tokens []byte) bool {
 	if context.ParseOption.KramdownBlockIAL && simpleCheckIsBlockIAL(tokens) {
 		// 判断 IAL 打断
 		if ial := context.parseKramdownBlockIAL(tokens); 0 < len(ial) {
+			context.Tip.ID = IAL2Map(ial)["id"]
 			context.Tip.KramdownIAL = ial
 			context.Tip.InsertAfter(&ast.Node{Type: ast.NodeKramdownBlockIAL, Tokens: tokens})
 			return true

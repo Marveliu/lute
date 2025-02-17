@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/88250/lute/ast"
+	"github.com/88250/lute/editor"
 	"github.com/88250/lute/html"
 	"github.com/88250/lute/util"
 )
@@ -42,25 +43,39 @@ func IALStart(t *Tree, container *ast.Node) int {
 
 		lastMatchedContainer := t.Context.lastMatchedContainer
 		if t.Context.allClosed {
-			if ast.NodeDocument == lastMatchedContainer.Type || ast.NodeListItem == lastMatchedContainer.Type || ast.NodeBlockquote == lastMatchedContainer.Type {
+			if ast.NodeDocument == lastMatchedContainer.Type || ast.NodeListItem == lastMatchedContainer.Type || ast.NodeBlockquote == lastMatchedContainer.Type || ast.NodeSuperBlock == lastMatchedContainer.Type {
 				lastMatchedContainer = t.Context.Tip.LastChild // 挂到最后一个子块上
 				if nil == lastMatchedContainer {
 					lastMatchedContainer = t.Context.lastMatchedContainer
 				}
-				if ast.NodeKramdownBlockIAL == lastMatchedContainer.Type && nil != lastMatchedContainer.Parent { // 两个连续的 IAL
+				if (ast.NodeSuperBlockLayoutMarker == lastMatchedContainer.Type || // 三个空块合并的超级块导出模版后使用会变成两个块  https://github.com/siyuan-note/siyuan/issues/4692
+					ast.NodeKramdownBlockIAL == lastMatchedContainer.Type) &&
+					nil != lastMatchedContainer.Parent { // 两个连续的 IAL
 					tokens := IAL2Tokens(ial)
 					if !bytes.HasPrefix(lastMatchedContainer.Tokens, tokens) { // 有的块解析已经做过打断处理
-						// 在两个连续的 IAL 之间插入空段落，这样能够保持空行留白
+						// 在两个连续的 IAL 之间插入空段落，这样能够保持空段落
 						p := &ast.Node{Type: ast.NodeParagraph, Tokens: []byte(" ")}
 						lastMatchedContainer.InsertAfter(p)
 						t.Context.Tip = p
 						lastMatchedContainer = p
 					}
+				} else if ast.NodeBlockquoteMarker == lastMatchedContainer.Type { // 引述块下没有段落子块，需要构建一个空的段落块挂上去
+					p := &ast.Node{Type: ast.NodeParagraph, Tokens: []byte(" ")}
+					lastMatchedContainer.InsertAfter(p)
+					t.Context.Tip = p
+					lastMatchedContainer = p
+				} else if ast.NodeDocument == lastMatchedContainer.Type {
+					// 第一个节点是 IAL 的话需要保留空段落
+					p := &ast.Node{Type: ast.NodeParagraph, Tokens: []byte(" ")}
+					lastMatchedContainer.AppendChild(p)
+					t.Context.Tip = p
+					lastMatchedContainer = p
 				}
 			}
 		}
 		lastMatchedContainer.KramdownIAL = ial
-		lastMatchedContainer.ID = ial[0][1]
+		ialMap := IAL2MapUnEsc(ial)
+		lastMatchedContainer.ID = ialMap["id"]
 		node := t.Context.addChild(ast.NodeKramdownBlockIAL)
 		node.Tokens = t.Context.currentLine[t.Context.nextNonspace:]
 		return 2
@@ -136,7 +151,7 @@ func Tokens2IAL(tokens []byte) (ret [][]string) {
 	tokens = bytes.TrimRight(tokens, " \n")
 	tokens = bytes.TrimPrefix(tokens, []byte("{:"))
 	tokens = bytes.TrimSuffix(tokens, []byte("}"))
-	tokens = bytes.ReplaceAll(tokens, []byte("\n"), []byte(util.IALValEscNewLine))
+	tokens = bytes.ReplaceAll(tokens, []byte("\n"), []byte(editor.IALValEscNewLine))
 	for {
 		valid, remains, attr, name, val := TagAttr(tokens)
 		if !valid {
@@ -148,7 +163,7 @@ func Tokens2IAL(tokens []byte) (ret [][]string) {
 			break
 		}
 
-		val = bytes.ReplaceAll(val, []byte(util.IALValEscNewLine), []byte("\n"))
+		val = bytes.ReplaceAll(val, []byte(editor.IALValEscNewLine), []byte("\n"))
 		ret = append(ret, []string{util.BytesToStr(name), util.BytesToStr(val)})
 	}
 	return
@@ -166,7 +181,7 @@ func (t *Tree) parseKramdownSpanIAL() {
 		}
 
 		switch n.Type {
-		case ast.NodeEmphasis, ast.NodeStrong, ast.NodeCodeSpan, ast.NodeStrikethrough, ast.NodeTag, ast.NodeMark, ast.NodeImage:
+		case ast.NodeEmphasis, ast.NodeStrong, ast.NodeCodeSpan, ast.NodeStrikethrough, ast.NodeTag, ast.NodeMark, ast.NodeImage, ast.NodeTextMark:
 			break
 		default:
 			return ast.WalkContinue
@@ -228,8 +243,8 @@ func (context *Context) parseKramdownSpanIAL(tokens []byte) (pos int, ret [][]st
 				break
 			}
 
-			nameStr := strings.ReplaceAll(util.BytesToStr(name), util.Caret, "")
-			valStr := strings.ReplaceAll(util.BytesToStr(val), util.Caret, "")
+			nameStr := strings.ReplaceAll(util.BytesToStr(name), editor.Caret, "")
+			valStr := strings.ReplaceAll(util.BytesToStr(val), editor.Caret, "")
 			ret = append(ret, []string{nameStr, valStr})
 		}
 	}
