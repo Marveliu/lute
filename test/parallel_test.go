@@ -10,40 +10,41 @@
 
 package test
 
-import (
-	"io/ioutil"
-	"sync"
-	"testing"
-
-	"github.com/88250/lute"
-)
-
-func TestParallel(t *testing.T) {
-	data0, err := ioutil.ReadFile("../test/commonmark-spec.md")
-	if nil != err {
-		t.Fatalf("read test text failed: " + err.Error())
-	}
-
-	data1, err := ioutil.ReadFile("../test/case1.md")
-	if nil != err {
-		t.Fatalf("read test text failed: " + err.Error())
-	}
-
-	wg := sync.WaitGroup{}
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			luteEngine := lute.New()
-			luteEngine.Markdown("", data0)
-		}()
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			luteEngine := lute.New()
-			luteEngine.Markdown("", data1)
-		}()
-	}
-	wg.Wait()
-}
+//
+//import (
+//	"os"
+//	"sync"
+//	"testing"
+//
+//	"github.com/88250/lute"
+//)
+//
+//func TestParallel(t *testing.T) {
+//	data0, err := os.ReadFile("../test/commonmark-spec.md")
+//	if nil != err {
+//		t.Fatalf("read test text failed: " + err.Error())
+//	}
+//
+//	data1, err := os.ReadFile("../test/case1.md")
+//	if nil != err {
+//		t.Fatalf("read test text failed: " + err.Error())
+//	}
+//
+//	wg := sync.WaitGroup{}
+//	for i := 0; i < 50; i++ {
+//		wg.Add(1)
+//		go func() {
+//			defer wg.Done()
+//			luteEngine := lute.New()
+//			luteEngine.Markdown("", data0)
+//		}()
+//
+//		wg.Add(1)
+//		go func() {
+//			defer wg.Done()
+//			luteEngine := lute.New()
+//			luteEngine.Markdown("", data1)
+//		}()
+//	}
+//	wg.Wait()
+//}

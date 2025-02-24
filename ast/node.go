@@ -13,11 +13,13 @@ package ast
 import (
 	"bytes"
 	"math/rand"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/88250/lute/editor"
 	"github.com/88250/lute/html"
 	"github.com/88250/lute/lex"
 	"github.com/88250/lute/util"
@@ -34,6 +36,7 @@ type Node struct {
 	ID   string `json:",omitempty"` // 节点的唯一标识
 	Box  string `json:"-"`          // 容器
 	Path string `json:"-"`          // 路径
+	Spec string `json:",omitempty"` // 规范版本号
 
 	Type       NodeType `json:"-"`              // 节点类型
 	Parent     *Node    `json:"-"`              // 父节点
@@ -115,6 +118,28 @@ type Node struct {
 
 	KramdownIAL [][]string        `json:"-"`          // Kramdown 内联属性列表
 	Properties  map[string]string `json:",omitempty"` // 属性
+
+	// 文本标记
+
+	TextMarkType                string `json:",omitempty"` // 文本标记类型
+	TextMarkAHref               string `json:",omitempty"` // 文本标记超链接 data-href 属性
+	TextMarkATitle              string `json:",omitempty"` // 文本标记超链接 data-title 属性
+	TextMarkInlineMathContent   string `json:",omitempty"` // 文本标记内联数学公式内容 data-content 属性
+	TextMarkInlineMemoContent   string `json:",omitempty"` // 文本标记内联备注内容 data-inline-memo-content 属性
+	TextMarkBlockRefID          string `json:",omitempty"` // 文本标记块引用 ID data-id 属性
+	TextMarkBlockRefSubtype     string `json:",omitempty"` // 文本标记块引用子类型（静态/动态锚文本） data-subtype 属性
+	TextMarkFileAnnotationRefID string `json:",omitempty"` // 文本标记文件注解引用 ID data-id 属性
+	TextMarkTextContent         string `json:",omitempty"` // 文本标记文本内容
+
+	// 属性视图 https://github.com/siyuan-note/siyuan/issues/7535
+
+	AttributeViewID   string `json:",omitempty"` // 属性视图 data-av-id 属性
+	AttributeViewType string `json:",omitempty"` // 属性视图 data-av-type 属性
+
+	// 自定义块 https://github.com/siyuan-note/siyuan/issues/8418
+
+	CustomBlockFenceOffset int    `json:",omitempty"` // 自定义块标记符起始偏移量
+	CustomBlockInfo        string `json:",omitempty"` // 自定义块信息
 }
 
 // ListData 用于记录列表或列表项节点的附加信息。
@@ -193,6 +218,175 @@ func randStr(length int) string {
 	return string(b)
 }
 
+func (n *Node) Marker(entering bool) (ret string) {
+	switch n.Type {
+	case NodeTagOpenMarker, NodeTagCloseMarker:
+		if entering {
+			return "#"
+		}
+	case NodeEmA6kOpenMarker, NodeEmA6kCloseMarker:
+		if entering {
+			return "*"
+		}
+	case NodeEmU8eOpenMarker, NodeEmU8eCloseMarker:
+		if entering {
+			return "_"
+		}
+	case NodeStrongA6kOpenMarker, NodeStrongA6kCloseMarker:
+		if entering {
+			return "**"
+		}
+	case NodeStrongU8eOpenMarker, NodeStrongU8eCloseMarker:
+		if entering {
+			return "__"
+		}
+	case NodeStrikethrough2OpenMarker, NodeStrikethrough2CloseMarker:
+		if entering {
+			return "~~"
+		}
+	case NodeSupOpenMarker, NodeSupCloseMarker:
+		if entering {
+			return "^"
+		}
+	case NodeSubOpenMarker, NodeSubCloseMarker:
+		if entering {
+			return "~"
+		}
+	case NodeInlineMathOpenMarker, NodeInlineMathCloseMarker:
+		if entering {
+			return "$"
+		}
+	case NodeKbdOpenMarker:
+		if entering {
+			return "<kbd>"
+		}
+	case NodeKbdCloseMarker:
+		if entering {
+			return "</kbd>"
+		}
+	case NodeUnderlineOpenMarker:
+		if entering {
+			return "<u>"
+		}
+	case NodeUnderlineCloseMarker:
+		if entering {
+			return "</u>"
+		}
+	case NodeMark2OpenMarker, NodeMark2CloseMarker:
+		if entering {
+			return "=="
+		}
+	case NodeBang:
+		if entering {
+			return "!"
+		}
+	case NodeOpenBracket:
+		if entering {
+			return "["
+		}
+	case NodeCloseBracket:
+		if entering {
+			return "]"
+		}
+	case NodeOpenParen:
+		if entering {
+			return "("
+		}
+	case NodeCloseParen:
+		if entering {
+			return ")"
+		}
+	}
+
+	return ""
+}
+
+func (n *Node) ContainTextMarkTypes(types ...string) bool {
+	nodeTypes := strings.Split(n.TextMarkType, " ")
+	for _, typ := range types {
+		for _, nodeType := range nodeTypes {
+			if typ == nodeType {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (n *Node) IsTextMarkType(typ string) bool {
+	types := strings.Split(n.TextMarkType, " ")
+	for _, t := range types {
+		if typ == t {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *Node) IsNextSameInlineMemo() bool {
+	if nil == n {
+		return false
+	}
+
+	var nextInlineMemo *Node
+	for node := n.Next; nil != node; node = node.Next {
+		if nil == n.Next || NodeKramdownSpanIAL == node.Type || nil == node.Next || NodeKramdownSpanIAL == node.Next.Type {
+			continue
+		}
+
+		if NodeTextMark == node.Type && node.IsTextMarkType("inline-memo") {
+			nextInlineMemo = node
+			break
+		}
+	}
+
+	if nil != nextInlineMemo && n.TextMarkInlineMemoContent == nextInlineMemo.TextMarkInlineMemoContent {
+		return true
+	}
+	return false
+}
+
+func (n *Node) IsSameTextMarkType(node *Node) bool {
+	if "" == n.TextMarkType || "" == node.TextMarkType {
+		return false
+	}
+
+	a := strings.Split(n.TextMarkType, " ")
+	b := strings.Split(node.TextMarkType, " ")
+	if len(a) != len(b) {
+		return false
+	}
+	sort.Strings(a)
+	sort.Strings(b)
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+
+		switch a[i] {
+		case "block-ref":
+			if n.TextMarkBlockRefID != node.TextMarkBlockRefID {
+				return false
+			}
+		case "a":
+			if n.TextMarkAHref != node.TextMarkAHref || node.TextMarkATitle != node.TextMarkATitle {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (n *Node) SortTextMarkDataTypes() {
+	if "" == n.TextMarkTextContent {
+		return
+	}
+
+	dataTypes := strings.Split(n.TextMarkType, " ")
+	sort.Strings(dataTypes)
+	n.TextMarkType = strings.Join(dataTypes, " ")
+}
+
 // ClearIALAttrs 用于删除 name、alias、memo 和 bookmark 以及所有 custom- 前缀属性。
 func (n *Node) ClearIALAttrs() {
 	tmp := n.KramdownIAL[:0]
@@ -222,14 +416,6 @@ func (n *Node) SetIALAttr(name, value string) {
 			return
 		}
 	}
-
-	if typ := n.IALAttr("type"); "doc" == typ {
-		// 让 type="doc" 保持在最后一个
-		n.RemoveIALAttr("type")
-		n.KramdownIAL = append(n.KramdownIAL, []string{name, value})
-		n.KramdownIAL = append(n.KramdownIAL, []string{"type", "doc"})
-		return
-	}
 	n.KramdownIAL = append(n.KramdownIAL, []string{name, value})
 }
 
@@ -240,6 +426,24 @@ func (n *Node) IALAttr(name string) string {
 		}
 	}
 	return ""
+}
+
+func (n *Node) IsEmptyBlockIAL() bool {
+	if NodeKramdownBlockIAL != n.Type {
+		return false
+	}
+
+	if util.IsDocIAL(n.Tokens) {
+		return false
+	}
+
+	if nil != n.Previous {
+		if NodeKramdownBlockIAL == n.Previous.Type {
+			return true
+		}
+		return false
+	}
+	return true
 }
 
 // TokensStr 返回 n 的 Tokens 字符串。
@@ -295,6 +499,8 @@ func (n *Node) Text() (ret string) {
 		switch n.Type {
 		case NodeText, NodeLinkText, NodeBlockRefText, NodeBlockRefDynamicText, NodeFileAnnotationRefText, NodeFootnotesRef:
 			buf.Write(n.Tokens)
+		case NodeTextMark:
+			buf.WriteString(n.TextMarkTextContent)
 		}
 		return WalkContinue
 	})
@@ -311,52 +517,113 @@ func (n *Node) TextLen() (ret int) {
 		switch n.Type {
 		case NodeText, NodeLinkText, NodeBlockRefText, NodeBlockRefDynamicText, NodeFileAnnotationRefText, NodeFootnotesRef:
 			buf = append(buf, n.Tokens...)
+		case NodeTextMark:
+			buf = append(buf, n.TextMarkTextContent...)
 		}
 		return WalkContinue
 	})
 	return utf8.RuneCount(buf)
 }
 
-// Content 返回 n 及其所有内容子节点的文本值。
+// Content 返回 n 及其所有内容子节点的文本值，块级节点间通过换行符分隔。
 func (n *Node) Content() (ret string) {
 	buf := &bytes.Buffer{}
 	Walk(n, func(n *Node, entering bool) WalkStatus {
 		if !entering {
+			if nil != n.Next && nil != n.Next.Next && 1 < buf.Len() && n.IsBlock() && buf.Bytes()[buf.Len()-1] != '\n' {
+				// 多个块级节点间使用换行符分隔 https://github.com/siyuan-note/siyuan/issues/8114
+				buf.WriteByte('\n')
+			}
 			return WalkContinue
 		}
+
 		switch n.Type {
 		case NodeText, NodeLinkText, NodeBlockRefText, NodeBlockRefDynamicText, NodeFileAnnotationRefText, NodeFootnotesRef,
 			NodeCodeSpanContent, NodeCodeBlockCode, NodeInlineMathContent, NodeMathBlockContent,
 			NodeHTMLEntity, NodeEmojiAlias, NodeEmojiUnicode, NodeBackslashContent, NodeYamlFrontMatterContent,
 			NodeGitConflictContent:
 			buf.Write(n.Tokens)
+		case NodeTextMark:
+			if "" != n.TextMarkTextContent {
+				if n.IsTextMarkType("code") || n.IsTextMarkType("tag") {
+					// 搜索代码内容转义问题 https://github.com/siyuan-note/siyuan/issues/5927
+					// 搜索标签内容转义问题 https://github.com/siyuan-note/siyuan/issues/13919
+					buf.WriteString(html.UnescapeString(n.TextMarkTextContent))
+				} else {
+					buf.WriteString(n.TextMarkTextContent)
+				}
+			} else if "" != n.TextMarkInlineMathContent {
+				content := n.TextMarkInlineMathContent
+				content = strings.ReplaceAll(content, editor.IALValEscNewLine, " ")
+				buf.WriteString(content)
+			}
+			if "" != n.TextMarkInlineMemoContent {
+				content := n.TextMarkInlineMemoContent
+				content = strings.ReplaceAll(content, editor.IALValEscNewLine, " ")
+				buf.WriteString(content)
+			}
 		}
 		return WalkContinue
 	})
+
 	return buf.String()
 }
 
-// ContentLen 返回 n 及其所有内容子节点的累计长度。
-func (n *Node) ContentLen() (runeCnt, wordCnt int) {
+// EscapeMarkerContent 返回 n 及其所有内容子节点的文本值（其中的标记符会被转义），块级节点间通过换行符分隔。
+func (n *Node) EscapeMarkerContent() (ret string) {
+	ret = n.Content()
+	ret = string(lex.EscapeProtyleMarkers([]byte(ret)))
+	return
+}
+
+func (n *Node) Stat() (runeCnt, wordCnt, linkCnt, imgCnt, refCnt int) {
 	buf := make([]byte, 0, 8192)
 	Walk(n, func(n *Node, entering bool) WalkStatus {
 		if !entering {
 			return WalkContinue
 		}
+
 		switch n.Type {
 		case NodeText, NodeLinkText, NodeBlockRefText, NodeBlockRefDynamicText, NodeFileAnnotationRefText, NodeFootnotesRef,
 			NodeCodeSpanContent, NodeCodeBlockCode, NodeInlineMathContent, NodeMathBlockContent,
 			NodeHTMLEntity, NodeEmojiAlias, NodeEmojiUnicode, NodeBackslashContent, NodeYamlFrontMatterContent,
 			NodeGitConflictContent:
 			buf = append(buf, n.Tokens...)
+		case NodeTextMark:
+			if 0 < len(n.TextMarkTextContent) {
+				buf = append(buf, n.TextMarkTextContent...)
+			} else if 0 < len(n.TextMarkInlineMathContent) {
+				content := n.TextMarkInlineMathContent
+				content = strings.ReplaceAll(content, editor.IALValEscNewLine, " ")
+				buf = append(buf, content...)
+			} else if "" != n.TextMarkInlineMemoContent {
+				content := n.TextMarkInlineMemoContent
+				content = strings.ReplaceAll(content, editor.IALValEscNewLine, " ")
+				buf = append(buf, content...)
+			}
+
+			if n.IsTextMarkType("a") {
+				linkCnt++
+			}
+			if n.IsTextMarkType("block-ref") || n.IsTextMarkType("file-annotation-ref") {
+				refCnt++
+			}
+		case NodeLink:
+			linkCnt++
+		case NodeImage:
+			imgCnt++
+		case NodeBlockRef:
+			refCnt++
 		}
 		if n.IsBlock() {
 			buf = append(buf, ' ')
 		}
 		return WalkContinue
 	})
+
 	buf = bytes.TrimSpace(buf)
-	return util.WordCount(util.BytesToStr(buf))
+	runeCnt, wordCnt = util.WordCount(util.BytesToStr(buf))
+	return
 }
 
 // TokenLen 返回 n 及其子节点 tokens 累计长度。
@@ -445,9 +712,14 @@ func (n *Node) Unlink() {
 	n.Previous = nil
 }
 
-// AppendTokens 添加 Tokens。
+// AppendTokens 添加 Tokens 到结尾。
 func (n *Node) AppendTokens(tokens []byte) {
 	n.Tokens = append(n.Tokens, string(tokens)...)
+}
+
+// PrependTokens 添加 Tokens 到开头。
+func (n *Node) PrependTokens(tokens []byte) {
+	n.Tokens = append(tokens, n.Tokens...)
 }
 
 // InsertAfter 在当前节点后插入一个兄弟节点。
@@ -523,11 +795,16 @@ func (n *Node) List() (ret []*Node) {
 // ParentIs 判断 n 的类型是否在指定的 nodeTypes 类型列表内。
 func (n *Node) ParentIs(nodeType NodeType, nodeTypes ...NodeType) bool {
 	types := append(nodeTypes, nodeType)
+	deep := 0
 	for p := n.Parent; nil != p; p = p.Parent {
 		for _, pt := range types {
 			if pt == p.Type {
 				return true
 			}
+		}
+		deep++
+		if 128 < deep {
+			break
 		}
 	}
 	return false
@@ -537,8 +814,9 @@ func (n *Node) ParentIs(nodeType NodeType, nodeTypes ...NodeType) bool {
 func (n *Node) IsBlock() bool {
 	switch n.Type {
 	case NodeDocument, NodeParagraph, NodeHeading, NodeThematicBreak, NodeBlockquote, NodeList, NodeListItem, NodeHTMLBlock,
-		NodeCodeBlock, NodeTable, NodeMathBlock, NodeFootnotesDefBlock, NodeFootnotesDef, NodeToC, NodeYamlFrontMatter, NodeBlockQueryEmbed,
-		NodeKramdownBlockIAL, NodeSuperBlock, NodeGitConflict, NodeAudio, NodeVideo, NodeIFrame, NodeWidget:
+		NodeCodeBlock, NodeTable, NodeMathBlock, NodeFootnotesDefBlock, NodeFootnotesDef, NodeToC, NodeYamlFrontMatter,
+		NodeBlockQueryEmbed, NodeKramdownBlockIAL, NodeSuperBlock, NodeGitConflict, NodeAudio, NodeVideo, NodeIFrame, NodeWidget,
+		NodeAttributeView, NodeCustomBlock:
 		return true
 	}
 	return false
@@ -553,7 +831,7 @@ func (n *Node) IsContainerBlock() bool {
 	return false
 }
 
-// IsMarker 判断 n 是否为标记符节点。
+// IsMarker 判断 n 是否为节点标记符。
 func (n *Node) IsMarker() bool {
 	switch n.Type {
 	case NodeHeadingC8hMarker, NodeBlockquoteMarker, NodeCodeBlockFenceOpenMarker, NodeCodeBlockFenceCloseMarker, NodeCodeBlockFenceInfoMarker,
@@ -568,10 +846,23 @@ func (n *Node) IsMarker() bool {
 	return false
 }
 
+// IsCloseMarker 判断 n 是否为闭合标记符。
+func (n *Node) IsCloseMarker() bool {
+	switch n.Type {
+	case NodeHeadingC8hMarker, NodeBlockquoteMarker, NodeCodeBlockFenceCloseMarker, NodeEmA6kCloseMarker, NodeEmU8eCloseMarker,
+		NodeStrongA6kCloseMarker, NodeStrongU8eCloseMarker, NodeCodeSpanCloseMarker, NodeStrikethrough1CloseMarker, NodeStrikethrough2CloseMarker,
+		NodeMathBlockCloseMarker, NodeInlineMathCloseMarker, NodeYamlFrontMatterCloseMarker, NodeMark1CloseMarker, NodeMark2CloseMarker,
+		NodeTagCloseMarker, NodeSuperBlockCloseMarker, NodeSupCloseMarker, NodeSubCloseMarker:
+		return true
+	}
+	return false
+}
+
 // AcceptLines 判断是否节点是否可以接受更多的文本行。比如 HTML 块、代码块和段落是可以接受更多的文本行的。
 func (n *Node) AcceptLines() bool {
 	switch n.Type {
-	case NodeParagraph, NodeCodeBlock, NodeHTMLBlock, NodeMathBlock, NodeYamlFrontMatter, NodeBlockQueryEmbed, NodeGitConflict, NodeIFrame, NodeWidget, NodeVideo, NodeAudio:
+	case NodeParagraph, NodeCodeBlock, NodeHTMLBlock, NodeMathBlock, NodeYamlFrontMatter, NodeBlockQueryEmbed,
+		NodeGitConflict, NodeIFrame, NodeWidget, NodeVideo, NodeAudio, NodeAttributeView, NodeCustomBlock:
 		return true
 	}
 	return false
@@ -581,7 +872,8 @@ func (n *Node) AcceptLines() bool {
 // 块引用节点（块级容器）可以包含任意节点；段落节点（叶子块节点）不能包含任何其他块级节点。
 func (n *Node) CanContain(nodeType NodeType) bool {
 	switch n.Type {
-	case NodeCodeBlock, NodeHTMLBlock, NodeParagraph, NodeThematicBreak, NodeTable, NodeMathBlock, NodeYamlFrontMatter, NodeGitConflict, NodeIFrame, NodeWidget, NodeVideo, NodeAudio:
+	case NodeCodeBlock, NodeHTMLBlock, NodeParagraph, NodeThematicBreak, NodeTable, NodeMathBlock, NodeYamlFrontMatter,
+		NodeGitConflict, NodeIFrame, NodeWidget, NodeVideo, NodeAudio, NodeAttributeView, NodeCustomBlock:
 		return false
 	case NodeList:
 		return NodeListItem == nodeType
@@ -814,11 +1106,9 @@ const (
 
 	NodeBr NodeType = 525 // <br> 换行
 
-	// <span data-type="mark">foo</span> 通用的行级文本标记
+	// <span data-type="mark">foo</span> 通用的行级文本标记，不能嵌套
 
-	NodeTextMark            NodeType = 530 // 文本标记
-	NodeTextMarkOpenMarker  NodeType = 531 // 开始文本标记符 <span>
-	NodeTextMarkCloseMarker NodeType = 532 // 开始文本标记符 </span>
+	NodeTextMark NodeType = 530 // 文本标记，该节点因为不存在嵌套，所以不使用 Open/Close 标记符
 
 	// Protyle 挂件，<iframe data-type="NodeWidget">
 
@@ -830,6 +1120,20 @@ const (
 	NodeFileAnnotationRefID    NodeType = 541 // 被引用的文件注解 ID（file/annotation）
 	NodeFileAnnotationRefSpace NodeType = 542 // 被引用的文件注解 ID 和文件注解引用锚文本之间的空格
 	NodeFileAnnotationRefText  NodeType = 543 // 文件注解引用锚文本（不能为空，如果为空的话会自动使用 ID 渲染）
+
+	// 属性视图 https://github.com/siyuan-note/siyuan/issues/7535 <div data-type="NodeAttributeView" data-av-type="table" data-av-id="xxx"></div>
+
+	NodeAttributeView NodeType = 550 // 属性视图
+
+	// 自定义块 https://github.com/siyuan-note/siyuan/issues/8418 ;;;info
+
+	NodeCustomBlock NodeType = 560 // 自定义块
+
+	// HTML 标签，在无法使用 Markdown 标记符的情况下直接使用 HTML 标签
+
+	NodeHTMLTag      NodeType = 570 // HTML 标签
+	NodeHTMLTagOpen  NodeType = 571 // 开始 HTML 标签
+	NodeHTMLTagClose NodeType = 572 // 结束 HTML 标签
 
 	NodeTypeMaxVal NodeType = 1024 // 节点类型最大值
 )

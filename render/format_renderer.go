@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/88250/lute/ast"
+	"github.com/88250/lute/editor"
 	"github.com/88250/lute/html"
 	"github.com/88250/lute/lex"
 	"github.com/88250/lute/parse"
@@ -164,29 +165,178 @@ func NewFormatRenderer(tree *parse.Tree, options *Options) *FormatRenderer {
 	ret.RendererFuncs[ast.NodeUnderlineCloseMarker] = ret.renderUnderlineCloseMarker
 	ret.RendererFuncs[ast.NodeBr] = ret.renderBr
 	ret.RendererFuncs[ast.NodeTextMark] = ret.renderTextMark
-	ret.RendererFuncs[ast.NodeTextMarkOpenMarker] = ret.renderTextMarkOpenMarker
-	ret.RendererFuncs[ast.NodeTextMarkCloseMarker] = ret.renderTextMarkCloseMarker
+	ret.RendererFuncs[ast.NodeAttributeView] = ret.renderAttributeView
+	ret.RendererFuncs[ast.NodeCustomBlock] = ret.renderCustomBlock
+	ret.RendererFuncs[ast.NodeHTMLTag] = ret.renderHTMLTag
+	ret.RendererFuncs[ast.NodeHTMLTagOpen] = ret.renderHTMLTagOpen
+	ret.RendererFuncs[ast.NodeHTMLTagClose] = ret.renderHTMLTagClose
 	return ret
 }
 
-func (r *FormatRenderer) renderTextMark(node *ast.Node, entering bool) ast.WalkStatus {
+func (r *FormatRenderer) renderHTMLTag(node *ast.Node, entering bool) ast.WalkStatus {
 	return ast.WalkContinue
 }
 
-func (r *FormatRenderer) renderTextMarkOpenMarker(node *ast.Node, entering bool) ast.WalkStatus {
+func (r *FormatRenderer) renderHTMLTagOpen(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
-		r.WriteString("<span data-type=\"")
 		r.Write(node.Tokens)
-		r.WriteString("\">")
 	}
 	return ast.WalkContinue
 }
 
-func (r *FormatRenderer) renderTextMarkCloseMarker(node *ast.Node, entering bool) ast.WalkStatus {
+func (r *FormatRenderer) renderHTMLTagClose(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
-		r.WriteString("</span>")
+		r.Write(node.Tokens)
 	}
 	return ast.WalkContinue
+}
+
+func (r *FormatRenderer) renderCustomBlock(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.Newline()
+		r.WriteString(";;;")
+		r.WriteString(node.CustomBlockInfo)
+		r.Newline()
+		r.Write(node.Tokens)
+		r.Newline()
+		r.WriteString(";;;")
+		if !r.isLastNode(r.Tree.Root, node) {
+			if r.withoutKramdownBlockIAL(node) {
+				r.WriteByte(lex.ItemNewline)
+			}
+		}
+	}
+	return ast.WalkContinue
+}
+
+func (r *FormatRenderer) renderAttributeView(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.Newline()
+		r.Tag("div", [][]string{
+			{"data-type", "NodeAttributeView"},
+			{"data-av-id", node.AttributeViewID},
+			{"data-av-type", node.AttributeViewType},
+		}, false)
+		r.WriteString("</div>")
+		r.Newline()
+		if !r.isLastNode(r.Tree.Root, node) {
+			if r.withoutKramdownBlockIAL(node) {
+				r.WriteByte(lex.ItemNewline)
+			}
+		}
+	}
+	return ast.WalkContinue
+}
+
+func (r *FormatRenderer) renderTextMark(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		if parse.ContainTextMark(node, "code", "inline-math", "kbd") {
+			if r.Options.AutoSpace {
+				if text := node.PreviousNodeText(); "" != text {
+					lastc, _ := utf8.DecodeLastRuneInString(text)
+					if editor.Zwsp == string(lastc) {
+						text = strings.TrimSuffix(text, editor.Zwsp)
+						lastc, _ = utf8.DecodeLastRuneInString(text)
+					}
+					if unicode.IsLetter(lastc) || unicode.IsDigit(lastc) {
+						r.WriteByte(lex.ItemSpace)
+					}
+				}
+			}
+		} else {
+			r.TextAutoSpacePrevious(node)
+		}
+
+		attrs := r.renderTextMarkAttrs(node)
+		r.Tag("span", attrs, false)
+		textContent := node.TextMarkTextContent
+		if node.ParentIs(ast.NodeTableCell) {
+			textContent = strings.ReplaceAll(textContent, "\\|", "|")
+			if !node.IsTextMarkType("code") {
+				textContent = strings.ReplaceAll(textContent, "|", "\\|")
+			} else {
+				textContent = strings.ReplaceAll(textContent, "|", "&#124;")
+			}
+			textContent = strings.ReplaceAll(textContent, "\n", "<br/>")
+			if strings.Contains(node.TextMarkType, "code") {
+				textContent = strings.ReplaceAll(textContent, "<br/>", "")
+			}
+		}
+
+		if r.Options.AutoSpace && !parse.ContainTextMark(node, "block-ref", "code", "inline-math", "kbd", "tag") {
+			// `优化排版` 支持行级元素加粗、斜体等 https://github.com/siyuan-note/siyuan/issues/6800
+			textContent = string(r.Space([]byte(textContent)))
+		}
+
+		r.WriteString(textContent)
+	} else {
+		r.WriteString("</span>")
+		if parse.ContainTextMark(node, "code", "inline-math", "kbd") {
+			if r.Options.AutoSpace {
+				if text := node.NextNodeText(); "" != text {
+					firstc, _ := utf8.DecodeRuneInString(text)
+					if editor.Zwsp == string(firstc) {
+						text = strings.TrimPrefix(text, editor.Zwsp)
+						firstc, _ = utf8.DecodeRuneInString(text)
+					}
+					if unicode.IsLetter(firstc) || unicode.IsDigit(firstc) {
+						r.WriteByte(lex.ItemSpace)
+					}
+				}
+			}
+		} else {
+			r.TextAutoSpaceNext(node)
+		}
+	}
+	return ast.WalkContinue
+}
+
+func (r *FormatRenderer) renderTextMarkAttrs(node *ast.Node) (attrs [][]string) {
+	attrs = [][]string{{"data-type", node.TextMarkType}}
+
+	types := strings.Split(node.TextMarkType, " ")
+	for _, typ := range types {
+		if "block-ref" == typ {
+			attrs = append(attrs, []string{"data-subtype", node.TextMarkBlockRefSubtype})
+			attrs = append(attrs, []string{"data-id", node.TextMarkBlockRefID})
+		} else if "a" == typ {
+			href := node.TextMarkAHref
+			href = string(r.LinkPath([]byte(href)))
+
+			if node.ParentIs(ast.NodeTableCell) {
+				href = strings.ReplaceAll(href, "\\|", "|")
+				href = strings.ReplaceAll(href, "|", "\\|")
+			}
+
+			attrs = append(attrs, []string{"data-href", href})
+			if "" != node.TextMarkATitle {
+				title := node.TextMarkATitle
+				if node.ParentIs(ast.NodeTableCell) {
+					title = strings.ReplaceAll(title, "\\|", "|")
+					title = strings.ReplaceAll(title, "|", "\\|")
+				}
+				attrs = append(attrs, []string{"data-title", title})
+			}
+		} else if "inline-math" == typ {
+			attrs = append(attrs, []string{"data-subtype", "math"})
+			inlineMathContent := node.TextMarkInlineMathContent
+			if node.ParentIs(ast.NodeTableCell) {
+				// Improve the handling of inline-math containing `|` in the table https://github.com/siyuan-note/siyuan/issues/9227
+				inlineMathContent = strings.ReplaceAll(inlineMathContent, "|", "&#124;")
+				inlineMathContent = strings.ReplaceAll(inlineMathContent, "\n", "<br/>")
+			}
+			inlineMathContent = html.EscapeHTMLStr(inlineMathContent)
+			attrs = append(attrs, []string{"data-content", inlineMathContent})
+			attrs = append(attrs, []string{"contenteditable", "false"})
+			attrs = append(attrs, []string{"class", "render-node"})
+		} else if "file-annotation-ref" == typ {
+			attrs = append(attrs, []string{"data-id", node.TextMarkFileAnnotationRefID})
+		} else if "inline-memo" == typ {
+			inlineMemoContent := node.TextMarkInlineMemoContent
+			attrs = append(attrs, []string{"data-inline-memo-content", inlineMemoContent})
+		}
+	}
+	return
 }
 
 func (r *FormatRenderer) renderBr(node *ast.Node, entering bool) ast.WalkStatus {
@@ -431,6 +581,19 @@ func (r *FormatRenderer) renderKramdownSpanIAL(node *ast.Node, entering bool) as
 
 	if entering {
 		r.Write(node.Tokens)
+	} else {
+		if previous := node.Previous; nil != previous && parse.ContainTextMark(previous, "code", "inline-math", "kbd") {
+			if text := node.NextNodeText(); "" != text {
+				firstc, _ := utf8.DecodeRuneInString(text)
+				if editor.Zwsp == string(firstc) {
+					text = strings.TrimPrefix(text, editor.Zwsp)
+					firstc, _ = utf8.DecodeRuneInString(text)
+				}
+				if unicode.IsLetter(firstc) || unicode.IsDigit(firstc) {
+					r.WriteByte(lex.ItemSpace)
+				}
+			}
+		}
 	}
 	return ast.WalkContinue
 }
@@ -717,22 +880,26 @@ func (r *FormatRenderer) renderTableCell(node *ast.Node, entering bool) ast.Walk
 	padding := node.TableCellContentMaxWidth - node.TableCellContentWidth
 	if entering {
 		r.WriteByte(lex.ItemPipe)
-		r.WriteByte(lex.ItemSpace)
-		switch node.TableCellAlign {
-		case 2:
-			r.Write(bytes.Repeat([]byte{lex.ItemSpace}, padding/2))
-		case 3:
-			r.Write(bytes.Repeat([]byte{lex.ItemSpace}, padding))
+		if !r.Options.ProtyleWYSIWYG {
+			r.WriteByte(lex.ItemSpace)
+			switch node.TableCellAlign {
+			case 2:
+				r.Write(bytes.Repeat([]byte{lex.ItemSpace}, padding/2))
+			case 3:
+				r.Write(bytes.Repeat([]byte{lex.ItemSpace}, padding))
+			}
 		}
 	} else {
-		switch node.TableCellAlign {
-		case 2:
-			r.Write(bytes.Repeat([]byte{lex.ItemSpace}, padding/2))
-		case 3:
-		default:
-			r.Write(bytes.Repeat([]byte{lex.ItemSpace}, padding))
+		if !r.Options.ProtyleWYSIWYG {
+			switch node.TableCellAlign {
+			case 2:
+				r.Write(bytes.Repeat([]byte{lex.ItemSpace}, padding/2))
+			case 3:
+			default:
+				r.Write(bytes.Repeat([]byte{lex.ItemSpace}, padding))
+			}
+			r.WriteByte(lex.ItemSpace)
 		}
-		r.WriteByte(lex.ItemSpace)
 	}
 	return ast.WalkContinue
 }
@@ -748,6 +915,10 @@ func (r *FormatRenderer) renderTableHead(node *ast.Node, entering bool) ast.Walk
 	if !entering {
 		headRow := node.FirstChild
 		for th := headRow.FirstChild; nil != th; th = th.Next {
+			if ast.NodeKramdownSpanIAL == th.Type {
+				continue
+			}
+
 			align := th.TableCellAlign
 			switch align {
 			case 0:
@@ -755,13 +926,17 @@ func (r *FormatRenderer) renderTableHead(node *ast.Node, entering bool) ast.Walk
 				if padding := th.TableCellContentMaxWidth - 1; 0 < padding {
 					r.Write(bytes.Repeat([]byte{lex.ItemHyphen}, padding))
 				}
-				r.WriteByte(lex.ItemSpace)
+				if !r.Options.ProtyleWYSIWYG {
+					r.WriteByte(lex.ItemSpace)
+				}
 			case 1:
 				r.WriteString("| :-")
 				if padding := th.TableCellContentMaxWidth - 2; 0 < padding {
 					r.Write(bytes.Repeat([]byte{lex.ItemHyphen}, padding))
 				}
-				r.WriteByte(lex.ItemSpace)
+				if !r.Options.ProtyleWYSIWYG {
+					r.WriteByte(lex.ItemSpace)
+				}
 			case 2:
 				r.WriteString("| :-")
 				if padding := th.TableCellContentMaxWidth - 3; 0 < padding {
@@ -789,7 +964,7 @@ func (r *FormatRenderer) renderTable(node *ast.Node, entering bool) ast.WalkStat
 		cells = append(cells, []*ast.Node{})
 
 		headRow := node.ChildByType(ast.NodeTableHead)
-		if nil == headRow {
+		if nil == headRow || nil == headRow.FirstChild || nil == node.FirstChild {
 			return ast.WalkSkipChildren
 		}
 
@@ -810,15 +985,15 @@ func (r *FormatRenderer) renderTable(node *ast.Node, entering bool) ast.WalkStat
 		for col := 0; col < len(cells[0]); col++ {
 			for row := 0; row < len(cells) && col < len(cells[row]); row++ {
 				cells[row][col].TableCellContentWidth = cells[row][col].TokenLen()
-				//自动添加空格会导致单元格宽度发生变化
+				// 自动添加空格会导致单元格宽度发生变化
 				if r.Options.AutoSpace {
 					ret := 0
-					//遍历字节点，将可能会多出来的空格计算出来
+					// 遍历字节点，将可能会多出来的空格计算出来
 					ast.Walk(cells[row][col], func(n *ast.Node, entering bool) ast.WalkStatus {
 						if !entering {
 							return ast.WalkContinue
 						}
-						//空格仅一个字节，可以直接计算长度
+						// 空格仅一个字节，可以直接计算长度
 						ret += len(r.Space(n.Tokens)) - len(n.Tokens)
 						return ast.WalkContinue
 					})
@@ -1017,7 +1192,9 @@ func (r *FormatRenderer) renderHTML(node *ast.Node, entering bool) ast.WalkStatu
 		r.Write(tokens)
 		r.Newline()
 		if !r.isLastNode(r.Tree.Root, node) {
-			r.WriteByte(lex.ItemNewline)
+			if r.withoutKramdownBlockIAL(node) {
+				r.WriteByte(lex.ItemNewline)
+			}
 		}
 	}
 	return ast.WalkContinue
@@ -1112,12 +1289,13 @@ func (r *FormatRenderer) renderText(node *ast.Node, entering bool) ast.WalkStatu
 			nil != node.Parent.Parent && nil != node.Parent.Parent.ListData && 3 == node.Parent.Parent.ListData.Typ {
 			if ' ' == r.LastOut {
 				tokens = bytes.TrimPrefix(tokens, []byte(" "))
-				if bytes.HasPrefix(tokens, []byte(util.Caret+" ")) {
-					tokens = bytes.TrimPrefix(tokens, []byte(util.Caret+" "))
-					tokens = append(util.CaretTokens, tokens...)
+				if bytes.HasPrefix(tokens, []byte(editor.Caret+" ")) {
+					tokens = bytes.TrimPrefix(tokens, []byte(editor.Caret+" "))
+					tokens = append(editor.CaretTokens, tokens...)
 				}
 			}
 		}
+
 		r.Write(tokens)
 	}
 	return ast.WalkContinue
@@ -1190,6 +1368,25 @@ func (r *FormatRenderer) renderCodeSpanCloseMarker(node *ast.Node, entering bool
 }
 
 func (r *FormatRenderer) renderInlineMath(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		if r.Options.AutoSpace {
+			if text := node.PreviousNodeText(); "" != text {
+				lastc, _ := utf8.DecodeLastRuneInString(text)
+				if unicode.IsLetter(lastc) || unicode.IsDigit(lastc) {
+					r.WriteByte(lex.ItemSpace)
+				}
+			}
+		}
+	} else {
+		if r.Options.AutoSpace {
+			if text := node.NextNodeText(); "" != text {
+				firstc, _ := utf8.DecodeRuneInString(text)
+				if unicode.IsLetter(firstc) || unicode.IsDigit(firstc) {
+					r.WriteByte(lex.ItemSpace)
+				}
+			}
+		}
+	}
 	return ast.WalkContinue
 }
 func (r *FormatRenderer) renderInlineMathOpenMarker(node *ast.Node, entering bool) ast.WalkStatus {
@@ -1379,6 +1576,7 @@ func (r *FormatRenderer) renderStrongU8eCloseMarker(node *ast.Node, entering boo
 
 func (r *FormatRenderer) renderBlockquote(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
+		r.newlineBeforeBlock(node)
 		r.Writer = &bytes.Buffer{}
 		r.NodeWriterStack = append(r.NodeWriterStack, r.Writer)
 	} else {
@@ -1437,6 +1635,7 @@ func (r *FormatRenderer) renderBlockquoteMarker(node *ast.Node, entering bool) a
 
 func (r *FormatRenderer) renderHeading(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
+		r.newlineBeforeBlock(node)
 		if !node.HeadingSetext {
 			r.Write(bytes.Repeat([]byte{lex.ItemCrosshatch}, node.HeadingLevel))
 			r.WriteByte(lex.ItemSpace)
@@ -1475,6 +1674,7 @@ func (r *FormatRenderer) renderHeadingID(node *ast.Node, entering bool) ast.Walk
 
 func (r *FormatRenderer) renderList(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
+		r.newlineBeforeBlock(node)
 		r.Writer = &bytes.Buffer{}
 		r.NodeWriterStack = append(r.NodeWriterStack, r.Writer)
 	} else {
@@ -1613,4 +1813,10 @@ func (r *FormatRenderer) renderSoftBreak(node *ast.Node, entering bool) ast.Walk
 
 func (r *FormatRenderer) withoutKramdownBlockIAL(node *ast.Node) bool {
 	return !r.Options.KramdownBlockIAL || 0 == len(node.KramdownIAL) || nil == node.Next || ast.NodeKramdownBlockIAL != node.Next.Type
+}
+
+func (r *FormatRenderer) newlineBeforeBlock(node *ast.Node) {
+	if !node.ParentIs(ast.NodeTableCell) && nil != node.Previous && (!node.Previous.IsBlock() && ast.NodeKramdownBlockIAL != node.Previous.Type && ast.NodeTaskListItemMarker != node.Previous.Type) {
+		r.Newline()
+	}
 }

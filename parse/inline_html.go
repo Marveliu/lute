@@ -12,8 +12,12 @@ package parse
 
 import (
 	"bytes"
+	"strings"
 
 	"github.com/88250/lute/ast"
+	"github.com/88250/lute/editor"
+	"github.com/88250/lute/html"
+	"github.com/88250/lute/html/atom"
 	"github.com/88250/lute/lex"
 	"github.com/88250/lute/util"
 )
@@ -23,12 +27,12 @@ func (t *Tree) parseInlineHTML(ctx *InlineContext) (ret *ast.Node) {
 	caretInTag := false
 	caretLeftSpace := false
 	if t.Context.ParseOption.VditorWYSIWYG || t.Context.ParseOption.VditorIR || t.Context.ParseOption.VditorSV || t.Context.ParseOption.ProtyleWYSIWYG {
-		caretIndex := bytes.Index(tokens, util.CaretTokens)
+		caretIndex := bytes.Index(tokens, editor.CaretTokens)
 		caretInTag = caretIndex > ctx.pos
 		if caretInTag {
-			caretLeftSpace = bytes.Contains(tokens, []byte(" "+util.Caret))
-			tokens = bytes.ReplaceAll(tokens, util.CaretTokens, []byte(util.CaretReplacement))
-			tokens = bytes.ReplaceAll(tokens, []byte("\""+util.CaretReplacement), []byte("\" "+util.CaretReplacement))
+			caretLeftSpace = bytes.Contains(tokens, []byte(" "+editor.Caret))
+			tokens = bytes.ReplaceAll(tokens, editor.CaretTokens, []byte(editor.CaretReplacement))
+			tokens = bytes.ReplaceAll(tokens, []byte("\""+editor.CaretReplacement), []byte("\" "+editor.CaretReplacement))
 		}
 	}
 
@@ -110,39 +114,55 @@ func (t *Tree) parseInlineHTML(ctx *InlineContext) (ret *ast.Node) {
 			tags = append(tags, tokens[1])
 		}
 		if (t.Context.ParseOption.VditorWYSIWYG || t.Context.ParseOption.VditorIR || t.Context.ParseOption.VditorSV) && caretInTag || t.Context.ParseOption.ProtyleWYSIWYG {
-			if !bytes.Contains(tags, []byte(util.CaretReplacement+" ")) && !caretLeftSpace {
-				tags = bytes.ReplaceAll(tags, []byte("\" "+util.CaretReplacement), []byte("\""+util.CaretReplacement))
+			if !bytes.Contains(tags, []byte(editor.CaretReplacement+" ")) && !caretLeftSpace {
+				tags = bytes.ReplaceAll(tags, []byte("\" "+editor.CaretReplacement), []byte("\""+editor.CaretReplacement))
 			}
-			tags = bytes.ReplaceAll(tags, []byte(util.CaretReplacement), util.CaretTokens)
+			tags = bytes.ReplaceAll(tags, []byte(editor.CaretReplacement), editor.CaretTokens)
 		}
 		ctx.pos += len(tags)
 
 		if t.Context.ParseOption.ProtyleWYSIWYG {
-			if bytes.Equal(tags, []byte("<kbd>")) {
-				ret = &ast.Node{Type: ast.NodeKbd}
-				ret.AppendChild(&ast.Node{Type: ast.NodeKbdOpenMarker})
-				return
-			} else if bytes.Equal(tags, []byte("</kbd>")) {
-				ret = &ast.Node{Type: ast.NodeKbdCloseMarker}
-				return
-			} else if bytes.Equal(tags, []byte("<u>")) {
-				ret = &ast.Node{Type: ast.NodeUnderline}
-				ret.AppendChild(&ast.Node{Type: ast.NodeUnderlineOpenMarker})
-				return
-			} else if bytes.Equal(tags, []byte("</u>")) {
-				ret = &ast.Node{Type: ast.NodeUnderlineCloseMarker}
-				return
-			} else if bytes.Equal(tags, []byte("<br />")) || bytes.Equal(tags, []byte("<br/>")) {
+			if bytes.EqualFold(tags, []byte("<br />")) || bytes.EqualFold(tags, []byte("<br/>")) || bytes.EqualFold(tags, []byte("<br>")) {
 				ret = &ast.Node{Type: ast.NodeBr}
 				return
 			} else if bytes.HasPrefix(tags, []byte("<span data-type=")) {
-				ret = &ast.Node{Type: ast.NodeTextMark}
-				typ := tags[len("<span data-type=")+1:]
-				typ = typ[:bytes.Index(typ, []byte("\""))]
-				ret.AppendChild(&ast.Node{Type: ast.NodeTextMarkOpenMarker, Tokens: typ})
+				ret = t.processSpanTag(tags, "<span data-type=", "</span>", ctx)
 				return
-			} else if bytes.Equal(tags, []byte("</span>")) {
-				ret = &ast.Node{Type: ast.NodeTextMarkCloseMarker}
+			} else if bytes.EqualFold(tags, []byte("<kbd>")) {
+				ret = t.processSpanTag(tags, "<kbd>", "</kbd>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<u>")) {
+				ret = t.processSpanTag(tags, "<u>", "</u>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<sup>")) {
+				ret = t.processSpanTag(tags, "<sup>", "</sup>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<sub>")) {
+				ret = t.processSpanTag(tags, "<sub>", "</sub>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<mark>")) {
+				ret = t.processSpanTag(tags, "<mark>", "</mark>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<s>")) {
+				ret = t.processSpanTag(tags, "<s>", "</s>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<del>")) {
+				ret = t.processSpanTag(tags, "<del>", "</del>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<strike>")) {
+				ret = t.processSpanTag(tags, "<strike>", "</strike>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<em>")) {
+				ret = t.processSpanTag(tags, "<em>", "</em>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<i>")) {
+				ret = t.processSpanTag(tags, "<i>", "</i>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<strong>")) {
+				ret = t.processSpanTag(tags, "<strong>", "</strong>", ctx)
+				return
+			} else if bytes.EqualFold(tags, []byte("<b>")) {
+				ret = t.processSpanTag(tags, "<b>", "</b>", ctx)
 				return
 			}
 		}
@@ -151,6 +171,56 @@ func (t *Tree) parseInlineHTML(ctx *InlineContext) (ret *ast.Node) {
 	}
 
 	ctx.pos = startPos + 1
+	return
+}
+
+func (t *Tree) processSpanTag(tags []byte, startTag, endTag string, ctx *InlineContext) (ret *ast.Node) {
+	remains := ctx.tokens[ctx.pos:]
+	if 1 > len(remains) {
+		return
+	}
+
+	end := bytes.Index(remains, []byte(endTag))
+	innerStartTagIndex := bytes.Index(remains, []byte(startTag))
+	if (bytes.Contains(remains, []byte(startTag)) && -1 < end && innerStartTagIndex < end) || -1 == end {
+		ret = &ast.Node{Type: ast.NodeInlineHTML, Tokens: tags}
+		return
+	}
+
+	closerLen := len(endTag)
+	endTmp := end + closerLen
+	if len(remains) < endTmp {
+		endTmp = len(remains)
+	}
+	tokens := append(tags, remains[:endTmp]...)
+	nodes, _ := html.ParseFragment(bytes.NewReader(tokens), &html.Node{Type: html.ElementNode})
+	if 1 != len(nodes) {
+		return
+	}
+	node := nodes[0]
+
+	var typ string
+	startTagLen := len(startTag)
+	if "<kbd>" == startTag || "<u>" == startTag || "<sup>" == startTag || "<sub>" == startTag || "<mark>" == startTag || "<s>" == startTag || "<del>" == startTag || "<strike>" == startTag || "<em>" == startTag || "<i>" == startTag || "<strong>" == startTag || "<b>" == startTag {
+		if !t.Context.ParseOption.HTMLTag2TextMark {
+			ret = &ast.Node{Type: ast.NodeInlineHTML, Tokens: tags}
+			return
+		}
+		typ = node.Data
+		if "b" == typ {
+			typ = "strong"
+		} else if "i" == typ {
+			typ = "em"
+		} else if "del" == typ || "strike" == typ {
+			typ = "s"
+		}
+	} else { // <span data-type="a">
+		typ = string(tags[startTagLen+1:])
+		typ = typ[:strings.Index(typ, "\"")]
+	}
+	ret = &ast.Node{Type: ast.NodeTextMark, TextMarkType: typ}
+	SetTextMarkNode(ret, node, t.Context.ParseOption)
+	ctx.pos += end + closerLen
 	return
 }
 
@@ -186,6 +256,9 @@ func (t *Tree) parseCDATA(tokens []byte) (valid bool, remains, content []byte) {
 		}
 	}
 	tokens = tokens[i:]
+	if 3 > len(tokens) {
+		return
+	}
 	if lex.ItemCloseBracket != tokens[0] || lex.ItemCloseBracket != tokens[1] || lex.ItemGreater != tokens[2] {
 		return
 	}
@@ -277,27 +350,11 @@ func (t *Tree) parseHTMLComment(tokens []byte) (valid bool, remains, comment []b
 		return
 	}
 
-	comment = append(comment, tokens[0], tokens[1], tokens[2])
-	tokens = tokens[3:]
 	length := len(tokens)
-	if 2 > length {
-		return
-	}
-	if lex.ItemGreater == tokens[0] {
-		return
-	}
-	if lex.ItemHyphen == tokens[0] && lex.ItemGreater == tokens[1] {
-		return
-	}
-	var token byte
 	var i int
 	for ; i < length; i++ {
-		token = tokens[i]
-		comment = append(comment, token)
-		if i <= length-2 && lex.ItemHyphen == token && lex.ItemHyphen == tokens[i+1] {
-			break
-		}
-		if i <= length-3 && lex.ItemHyphen == token && lex.ItemHyphen == tokens[i+1] && lex.ItemGreater == tokens[i+2] {
+		comment = append(comment, tokens[i])
+		if i <= length-3 && lex.ItemHyphen == tokens[i] && lex.ItemHyphen == tokens[i+1] && lex.ItemGreater == tokens[i+2] {
 			break
 		}
 	}
@@ -470,5 +527,270 @@ func (t *Tree) parseTagName(tokens []byte) (remains, tagName []byte) {
 		tagName = append(tagName, token)
 	}
 	remains = tokens[i:]
+	return
+}
+
+func SetSpanIAL(node *ast.Node, n *html.Node) {
+	if nil == node || nil == n {
+		return
+	}
+
+	insertedIAL := false
+	if style := util.DomAttrValue(n, "style"); "" != style { // 比如设置表格列宽，颜色等
+		style = StyleValue(style)
+		node.SetIALAttr("style", style)
+
+		ialTokens := IAL2Tokens(node.KramdownIAL)
+		ial := &ast.Node{Type: ast.NodeKramdownSpanIAL, Tokens: ialTokens}
+		if ast.NodeTableCell == node.Type {
+			node.PrependChild(ial)
+		} else {
+			node.InsertAfter(ial)
+		}
+		insertedIAL = true
+	}
+
+	if customAttrs := util.DomCustomAttrs(n); nil != customAttrs {
+		if !insertedIAL {
+			for k, v := range customAttrs {
+				v = html.UnescapeHTMLStr(v)
+				node.SetIALAttr(k, v)
+			}
+
+			ialTokens := IAL2Tokens(node.KramdownIAL)
+			ial := &ast.Node{Type: ast.NodeKramdownSpanIAL, Tokens: ialTokens}
+			if ast.NodeTableCell == node.Type {
+				node.PrependChild(ial)
+			} else {
+				node.InsertAfter(ial)
+			}
+			insertedIAL = true
+		} else {
+			for k, v := range customAttrs {
+				v = html.UnescapeHTMLStr(v)
+				node.SetIALAttr(k, v)
+			}
+
+			ialTokens := IAL2Tokens(node.KramdownIAL)
+			ial := node.Next
+			if ast.NodeTableCell == node.Type {
+				ial = node.FirstChild
+			}
+			ial.Tokens = ialTokens
+		}
+	}
+
+	if atom.Th == n.DataAtom || atom.Td == n.DataAtom {
+		// 设置表格合并单元格
+		colspan := util.DomAttrValue(n, "colspan")
+		if "" != colspan {
+			node.SetIALAttr("colspan", colspan)
+		}
+		rowspan := util.DomAttrValue(n, "rowspan")
+		if "" != rowspan {
+			node.SetIALAttr("rowspan", rowspan)
+		}
+		class := util.DomAttrValue(n, "class")
+		if "" != class {
+			node.SetIALAttr("class", class)
+		}
+		if "" != colspan || "" != rowspan || "" != class {
+			ialTokens := IAL2Tokens(node.KramdownIAL)
+			if !insertedIAL {
+				ial := &ast.Node{Type: ast.NodeKramdownSpanIAL, Tokens: ialTokens}
+				node.PrependChild(ial)
+				insertedIAL = true
+			} else {
+				// 合并这两个 IAL
+				node.FirstChild.Tokens = IAL2Tokens(node.KramdownIAL)
+			}
+		}
+	}
+
+	if nil != n.Parent && atom.Img == n.DataAtom {
+		if style := util.DomAttrValue(n.Parent, "style"); "" != style {
+			if insertedIAL {
+				m := Tokens2IAL(node.Next.Tokens)
+				merged := false
+				for _, kv := range m {
+					if "style" == kv[0] {
+						kv[1] = kv[1] + style
+						merged = true
+						break
+					}
+				}
+				if !merged {
+					m = append(m, []string{"style", style})
+				}
+				node.Next.Tokens = IAL2Tokens(m)
+				node.SetIALAttr("style", style)
+				node.KramdownIAL = m
+			} else {
+				node.SetIALAttr("style", style)
+				ialTokens := IAL2Tokens(node.KramdownIAL)
+				ial := &ast.Node{Type: ast.NodeKramdownSpanIAL, Tokens: ialTokens}
+				node.InsertAfter(ial)
+			}
+			insertedIAL = true
+		}
+	}
+
+	if nil != n.Parent && nil != n.Parent.Parent && atom.Img == n.DataAtom {
+		if parentStyle := util.DomAttrValue(n.Parent.Parent, "style"); "" != parentStyle {
+			if insertedIAL {
+				m := Tokens2IAL(node.Next.Tokens)
+				m = append(m, []string{"parent-style", parentStyle})
+				node.Next.Tokens = IAL2Tokens(m)
+				node.SetIALAttr("parent-style", parentStyle)
+				node.KramdownIAL = m
+			} else {
+				node.SetIALAttr("parent-style", parentStyle)
+				ialTokens := IAL2Tokens(node.KramdownIAL)
+				ial := &ast.Node{Type: ast.NodeKramdownSpanIAL, Tokens: ialTokens}
+				node.InsertAfter(ial)
+			}
+		}
+	}
+}
+
+func ContainTextMark(node *ast.Node, dataTypes ...string) bool {
+	parts := strings.Split(node.TextMarkType, " ")
+	for _, typ := range parts {
+		for _, dataType := range dataTypes {
+			if typ == dataType {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func SetTextMarkNode(node *ast.Node, n *html.Node, options *Options) {
+	node.Type = ast.NodeTextMark
+	dataType := util.DomAttrValue(n, "data-type")
+	if "" == dataType {
+		if n.DataAtom == atom.Span {
+			dataType = "text"
+		} else {
+			if "" != node.TextMarkType {
+				dataType = node.TextMarkType
+			} else {
+				dataType = n.DataAtom.String()
+				if "b" == dataType {
+					dataType = "strong"
+				} else if "i" == dataType {
+					dataType = "em"
+				} else if "del" == dataType || "strike" == dataType {
+					dataType = "s"
+				}
+			}
+		}
+	}
+	node.TextMarkType = dataType
+	node.Tokens = nil
+	types := strings.Split(dataType, " ")
+	// 重新排序，将 a、inline-memo、block-ref、file-annotation-ref、inline-math 放在最前面
+	var tmp []string
+	for i, typ := range types {
+		if "a" == typ || "inline-memo" == typ || "block-ref" == typ || "file-annotation-ref" == typ || "inline-math" == typ {
+			tmp = append(tmp, typ)
+			types = append(types[:i], types[i+1:]...)
+			break
+		}
+	}
+	types = append(tmp, types...)
+
+	isInlineMath := false
+	for _, typ := range types {
+		switch typ {
+		case "a":
+			node.TextMarkAHref, node.TextMarkATitle = util.GetTextMarkAData(n)
+			node.TextMarkTextContent = util.GetTextMarkTextData(n)
+		case "inline-math":
+			node.TextMarkInlineMathContent = util.GetTextMarkInlineMathData(n)
+			isInlineMath = true
+		case "block-ref":
+			node.TextMarkBlockRefID, node.TextMarkBlockRefSubtype = util.GetTextMarkBlockRefData(n)
+			node.TextMarkTextContent = util.GetTextMarkTextData(n)
+		case "file-annotation-ref":
+			node.TextMarkFileAnnotationRefID = util.GetTextMarkFileAnnotationRefData(n)
+			node.TextMarkTextContent = util.GetTextMarkTextData(n)
+		case "inline-memo":
+			node.TextMarkTextContent = util.GetTextMarkTextData(n)
+			node.TextMarkInlineMemoContent = util.GetTextMarkInlineMemoData(n)
+			inlineTree := Inline("", []byte(node.TextMarkInlineMemoContent), options)
+			if nil != inlineTree {
+				node.TextMarkInlineMemoContent = strings.ReplaceAll(inlineTree.Root.Content(), "\n", editor.IALValEscNewLine)
+				node.TextMarkInlineMemoContent = strings.ReplaceAll(node.TextMarkInlineMemoContent, "\"", "&quot;")
+			}
+		default:
+			if !isInlineMath { // 带有字体样式的公式复制之后内容不正确 https://github.com/siyuan-note/siyuan/issues/6799
+				node.TextMarkTextContent = util.GetTextMarkTextDataWithoutEscapeSingleQuote(n)
+
+				if node.ContainTextMarkTypes("strong", "em", "s", "mark", "sup", "sub") {
+					// Improve some inline elements Markdown editing https://github.com/siyuan-note/siyuan/issues/9999
+					startBlank, endBlank := startEndBlank(node.TextMarkTextContent)
+					if "" != startBlank {
+						node.InsertBefore(&ast.Node{Type: ast.NodeText, Tokens: []byte(startBlank)})
+					}
+					if "" != endBlank {
+						node.InsertAfter(&ast.Node{Type: ast.NodeText, Tokens: []byte(endBlank)})
+					}
+					node.TextMarkTextContent = strings.TrimSpace(node.TextMarkTextContent)
+				}
+
+				if node.ParentIs(ast.NodeTableCell) && node.IsTextMarkType("code") {
+					// 表格中的代码中带有管道符时使用 HTML 实体替换管道符 Improve the handling of inline-code containing `|` in the table https://github.com/siyuan-note/siyuan/issues/9252
+					node.TextMarkTextContent = strings.ReplaceAll(node.TextMarkTextContent, "|", "&#124;")
+				}
+
+				if "u" == node.TextMarkType {
+					// 下划线中支持包含 Markdown 语法 Improve underline element parsing https://github.com/siyuan-note/siyuan/issues/13768
+
+					content := node.TextMarkTextContent
+					if nil != n.FirstChild && "a" == util.DomAttrValue(n.FirstChild, "data-type") {
+						content = "[" + content + "](" + util.DomAttrValue(n.FirstChild, "data-href") + ")"
+					}
+
+					inlineTree := Inline("", []byte(content), options)
+					if nil != inlineTree && nil != inlineTree.Root.FirstChild && nil != inlineTree.Root.FirstChild.FirstChild {
+						node.TextMarkTextContent = inlineTree.Root.FirstChild.Content()
+
+						if nil == inlineTree.Root.FirstChild.FirstChild.Next {
+							// 不支持下划线中包含多个元素
+							if ast.NodeLink == inlineTree.Root.FirstChild.FirstChild.Type {
+								node.TextMarkType += " a"
+								node.TextMarkAHref = inlineTree.Root.FirstChild.FirstChild.ChildByType(ast.NodeLinkDest).TokensStr()
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	SetSpanIAL(node, n)
+}
+
+func StyleValue(style string) (ret string) {
+	ret = strings.TrimSpace(style)
+	ret = strings.ReplaceAll(ret, "\n", "")
+	ret = strings.Join(strings.Fields(ret), " ")
+	return
+}
+
+func startEndBlank(str string) (startBlank, endBlank string) {
+	for _, r := range str {
+		if ' ' != r && '\t' != r && '\n' != r {
+			break
+		}
+		startBlank += string(r)
+	}
+	for i := len(str) - 1; i >= 0; i-- {
+		if ' ' != str[i] && '\t' != str[i] && '\n' != str[i] {
+			break
+		}
+		endBlank = string(str[i]) + endBlank
+	}
 	return
 }

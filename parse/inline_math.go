@@ -11,6 +11,8 @@
 package parse
 
 import (
+	"bytes"
+
 	"github.com/88250/lute/ast"
 	"github.com/88250/lute/lex"
 	"github.com/88250/lute/util"
@@ -19,7 +21,7 @@ import (
 var dollar = util.StrToBytes("$")
 
 func (t *Tree) parseInlineMath(ctx *InlineContext) (ret *ast.Node) {
-	if 3 > ctx.tokensLen {
+	if 3 > ctx.tokensLen || !t.Context.ParseOption.InlineMath {
 		ctx.pos++
 		return &ast.Node{Type: ast.NodeText, Tokens: dollar}
 	}
@@ -70,6 +72,14 @@ func (t *Tree) parseInlineMath(ctx *InlineContext) (ret *ast.Node) {
 		return
 	}
 
+	if t.Context.ParseOption.TextMark {
+		if bytes.Contains(ctx.tokens[startPos+1:startPos+endPos+1], []byte("<span")) {
+			// 中间包含 span 节点的话打断公式，以 span 优先
+			ctx.pos++
+			return &ast.Node{Type: ast.NodeText, Tokens: dollar}
+		}
+	}
+
 	endPos = startPos + endPos + 2
 
 	tokens := ctx.tokens[startPos+1 : endPos-1]
@@ -92,7 +102,7 @@ func (t *Tree) matchInlineMathEnd(tokens []byte) (pos int) {
 	for ; pos < length; pos++ {
 		if lex.ItemDollar == tokens[pos] && 0 < pos && lex.ItemBackslash != tokens[pos-1] {
 			if pos < length-1 {
-				if !lex.IsDigit(tokens[pos+1]) {
+				if !lex.IsDigit(tokens[pos+1]) || t.Context.ParseOption.InlineMathAllowDigitAfterOpenMarker {
 					return pos
 				}
 			} else {

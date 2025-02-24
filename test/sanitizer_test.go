@@ -19,6 +19,15 @@ import (
 
 var sanitizerTests = []parseTest{
 
+	{"16", "<form><input formaction=javascript:alert('xss') type=submit value='click me'></input></form>", "<form><input type=\"submit\" value=\"click me\"></input></form>\n"},
+	{"15", "<meta http-equiv=\"refresh\" content=\"0\" />", "<meta content=\"0\"/>\n"},
+	{"14", "<div><p /><a href=\"javascript:alert('xss')\">click me</a></div>", "<div><p/><a>click me</a></div>\n"},
+	{"13", "<iframe src=\"data&NewLine;:text/html,%3Cscript%3Ealert('xss')%3C%2Fscript%3E\"></iframe>", "<iframe></iframe>\n"},
+	{"12", "<iframe src=\"data&Tab;:text/html,%3Cscript%3Ealert('xss')%3C%2Fscript%3E\"></iframe>", "<iframe></iframe>\n"},
+	{"11", "<iframe src=\"java&NewLine;script:alert('xss')\"></iframe>", "<iframe></iframe>\n"},
+	{"10", "<iframe src=\"java&Tab;script:alert('xss')\"></iframe>", "<iframe></iframe>\n"},
+	{"9", "<iframe srcdoc=\"&lt;img src&equals;x onerror&equals;alert&lpar;'xss'&rpar;&gt;\" />", "<iframe/>\n"},
+	{"8", "[xss](javascript:alert(document.domain))", "<p><a href=\"\">xss</a></p>\n"},
 	{"7", "![a](\"<img src=xss onerror=alert(1)>)\n", "<p>![a](&quot;&lt;img src=xss onerror=alert(1)&gt;)</p>\n"},
 	{"6", "<img src=\"foo\" onload=\"alert(1)\" onerror=\"alert(2)\"/>", "<img src=\"foo\" />\n"},
 	{"5", "<iframe src='javascript:parent.require(\"child_process\").exec(\"open -a Calculator\")'></iframe>", "<iframe></iframe>\n"},

@@ -13,12 +13,13 @@ package render
 import (
 	"bytes"
 	"strconv"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/88250/lute/html"
-
 	"github.com/88250/lute/ast"
+	"github.com/88250/lute/editor"
+	"github.com/88250/lute/html"
 	"github.com/88250/lute/lex"
 	"github.com/88250/lute/parse"
 	"github.com/88250/lute/util"
@@ -151,6 +152,20 @@ func NewHtmlRenderer(tree *parse.Tree, options *Options) *HtmlRenderer {
 	ret.RendererFuncs[ast.NodeGitConflictOpenMarker] = ret.renderGitConflictOpenMarker
 	ret.RendererFuncs[ast.NodeGitConflictContent] = ret.renderGitConflictContent
 	ret.RendererFuncs[ast.NodeGitConflictCloseMarker] = ret.renderGitConflictCloseMarker
+	ret.RendererFuncs[ast.NodeIFrame] = ret.renderIFrame
+	ret.RendererFuncs[ast.NodeWidget] = ret.renderWidget
+	ret.RendererFuncs[ast.NodeVideo] = ret.renderVideo
+	ret.RendererFuncs[ast.NodeAudio] = ret.renderAudio
+	ret.RendererFuncs[ast.NodeKbd] = ret.renderKbd
+	ret.RendererFuncs[ast.NodeKbdOpenMarker] = ret.renderKbdOpenMarker
+	ret.RendererFuncs[ast.NodeKbdCloseMarker] = ret.renderKbdCloseMarker
+	ret.RendererFuncs[ast.NodeUnderline] = ret.renderUnderline
+	ret.RendererFuncs[ast.NodeUnderlineOpenMarker] = ret.renderUnderlineOpenMarker
+	ret.RendererFuncs[ast.NodeUnderlineCloseMarker] = ret.renderUnderlineCloseMarker
+	ret.RendererFuncs[ast.NodeBr] = ret.renderBr
+	ret.RendererFuncs[ast.NodeTextMark] = ret.renderTextMark
+	ret.RendererFuncs[ast.NodeAttributeView] = ret.renderAttributeView
+	ret.RendererFuncs[ast.NodeCustomBlock] = ret.renderCustomBlock
 	return ret
 }
 
@@ -158,6 +173,179 @@ func (r *HtmlRenderer) Render() (output []byte) {
 	output = r.BaseRenderer.Render()
 	output = append(output, r.RenderFootnotes()...)
 	return
+}
+
+func (r *HtmlRenderer) renderCustomBlock(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.Newline()
+		r.Tag("div", [][]string{
+			{"data-type", "NodeCustomBlock"},
+			{"data-info", node.CustomBlockInfo},
+			{"data-content", string(html.EscapeHTML(node.Tokens))},
+		}, false)
+		r.WriteString("</div>")
+		r.Newline()
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderAttributeView(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.Newline()
+		r.Tag("div", [][]string{
+			{"data-type", "NodeAttributeView"},
+			{"data-av-id", node.AttributeViewID},
+			{"data-av-type", node.AttributeViewType},
+		}, false)
+		r.WriteString("</div>")
+		r.Newline()
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderTextMark(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		textContent := node.TextMarkTextContent
+		if node.ParentIs(ast.NodeTableCell) {
+			if node.IsTextMarkType("code") {
+				textContent = strings.ReplaceAll(textContent, "|", "&#124;")
+			} else {
+				textContent = strings.ReplaceAll(textContent, "\\|", "|")
+			}
+			textContent = strings.ReplaceAll(textContent, "\n", "<br />")
+		}
+
+		if node.IsTextMarkType("a") {
+			attrs := [][]string{{"href", node.TextMarkAHref}}
+			if "" != node.TextMarkATitle {
+				attrs = append(attrs, []string{"title", node.TextMarkATitle})
+			}
+			r.spanNodeAttrs(node, &attrs)
+			r.Tag("a", attrs, false)
+			r.WriteString(textContent)
+			r.WriteString("</a>")
+		} else if node.IsTextMarkType("inline-memo") {
+			r.WriteString(textContent)
+			lastRune, _ := utf8.DecodeLastRuneInString(node.TextMarkTextContent)
+			if isCJK(lastRune) {
+				r.WriteString("<sup>（")
+				memo := node.TextMarkInlineMemoContent
+				memo = strings.ReplaceAll(memo, editor.IALValEscNewLine, " ")
+				r.WriteString(memo)
+				r.WriteString("）</sup>")
+			} else {
+				r.WriteString("<sup>(")
+				r.WriteString(node.TextMarkInlineMemoContent)
+				r.WriteString(")</sup>")
+			}
+		} else {
+			attrs := r.renderTextMarkAttrs(node)
+			r.spanNodeAttrs(node, &attrs)
+			r.Tag("span", attrs, false)
+			r.WriteString(textContent)
+			r.WriteString("</span>")
+		}
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderBr(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.WriteString("<br />")
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderUnderline(node *ast.Node, entering bool) ast.WalkStatus {
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderUnderlineOpenMarker(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.WriteString("<u>")
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderUnderlineCloseMarker(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.WriteString("</u>")
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderKbd(node *ast.Node, entering bool) ast.WalkStatus {
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderKbdOpenMarker(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.WriteString("<kbd>")
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderKbdCloseMarker(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.WriteString("</kbd>")
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderVideo(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.Tag("div", [][]string{{"class", "iframe"}}, false)
+		tokens := node.Tokens
+		if r.Options.Sanitize {
+			tokens = sanitize(tokens)
+		}
+		tokens = r.tagSrcPath(tokens)
+		r.Write(tokens)
+		r.Tag("/div", nil, false)
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderAudio(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.Tag("div", [][]string{{"class", "iframe"}}, false)
+		tokens := node.Tokens
+		if r.Options.Sanitize {
+			tokens = sanitize(tokens)
+		}
+		tokens = r.tagSrcPath(tokens)
+		r.Write(tokens)
+		r.Tag("/div", nil, false)
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderIFrame(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.Tag("div", [][]string{{"class", "iframe"}}, false)
+		tokens := node.Tokens
+		if r.Options.Sanitize {
+			tokens = sanitize(tokens)
+		}
+		tokens = r.tagSrcPath(tokens)
+		r.Write(tokens)
+		r.Tag("/div", nil, false)
+	}
+	return ast.WalkContinue
+}
+
+func (r *HtmlRenderer) renderWidget(node *ast.Node, entering bool) ast.WalkStatus {
+	if entering {
+		r.Tag("div", [][]string{{"class", "iframe"}}, false)
+		tokens := node.Tokens
+		if r.Options.Sanitize {
+			tokens = sanitize(tokens)
+		}
+		tokens = r.tagSrcPath(tokens)
+		r.Write(tokens)
+		r.Tag("/div", nil, false)
+	}
+	return ast.WalkContinue
 }
 
 func (r *HtmlRenderer) renderGitConflictCloseMarker(node *ast.Node, entering bool) ast.WalkStatus {
@@ -457,7 +645,7 @@ func (r *HtmlRenderer) renderFootnotesRef(node *ast.Node, entering bool) ast.Wal
 		idx, _ := r.Tree.FindFootnotesDef(node.Tokens)
 		idxStr := strconv.Itoa(idx)
 		r.Tag("sup", [][]string{{"class", "footnotes-ref"}, {"id", "footnotes-ref-" + node.FootnotesRefId}}, false)
-		r.Tag("a", [][]string{{"href", "#footnotes-def-" + idxStr}}, false)
+		r.Tag("a", [][]string{{"href", r.Options.LinkBase + "#footnotes-def-" + idxStr}}, false)
 		r.WriteString(idxStr)
 		r.Tag("/a", nil, false)
 		r.Tag("/sup", nil, false)
@@ -563,7 +751,12 @@ func (r *HtmlRenderer) renderInlineMathCloseMarker(node *ast.Node, entering bool
 
 func (r *HtmlRenderer) renderInlineMathContent(node *ast.Node, entering bool) ast.WalkStatus {
 	if entering {
-		r.Write(html.EscapeHTML(node.Tokens))
+		tokens := node.Tokens
+		if node.ParentIs(ast.NodeTableCell) {
+			// Improve the `|` render in the inline math in the table https://github.com/Vanessa219/vditor/issues/1550
+			tokens = bytes.ReplaceAll(tokens, []byte("\\|"), []byte("|"))
+		}
+		r.Write(html.EscapeHTML(tokens))
 	}
 	return ast.WalkContinue
 }
@@ -830,6 +1023,13 @@ func (r *HtmlRenderer) renderLink(node *ast.Node, entering bool) ast.WalkStatus 
 
 		dest := node.ChildByType(ast.NodeLinkDest)
 		destTokens := dest.Tokens
+		if r.Options.Sanitize {
+			tokens := bytes.TrimSpace(destTokens)
+			tokens = bytes.ToLower(tokens)
+			if bytes.HasPrefix(tokens, []byte("javascript:")) {
+				destTokens = nil
+			}
+		}
 		destTokens = r.LinkPath(destTokens)
 		attrs := [][]string{{"href", util.BytesToStr(html.EscapeHTML(destTokens))}}
 		if title := node.ChildByType(ast.NodeLinkTitle); nil != title && nil != title.Tokens {
@@ -884,7 +1084,9 @@ func (r *HtmlRenderer) renderParagraph(node *ast.Node, entering bool) ast.WalkSt
 		var attrs [][]string
 		attrs = append(attrs, node.KramdownIAL...)
 		if r.Options.ChineseParagraphBeginningSpace && ast.NodeDocument == node.Parent.Type {
-			attrs = append(attrs, []string{"class", "indent--2"})
+			if !r.ParagraphContainImgOnly(node) {
+				attrs = append(attrs, []string{"class", "indent--2"})
+			}
 		}
 		r.Tag("p", attrs, false)
 	} else {
@@ -1187,4 +1389,47 @@ func (r *HtmlRenderer) handleKramdownBlockIAL(node *ast.Node) {
 		// 第一项必须是 ID
 		node.KramdownIAL[0][0] = r.Options.KramdownIALIDRenderName
 	}
+}
+
+func (r *HtmlRenderer) renderTextMarkAttrs(node *ast.Node) (attrs [][]string) {
+	attrs = [][]string{{"data-type", node.TextMarkType}}
+
+	types := strings.Split(node.TextMarkType, " ")
+	for _, typ := range types {
+		if "block-ref" == typ {
+			attrs = append(attrs, []string{"data-subtype", node.TextMarkBlockRefSubtype})
+			attrs = append(attrs, []string{"data-id", node.TextMarkBlockRefID})
+		} else if "a" == typ {
+			href := node.TextMarkAHref
+			href = string(r.LinkPath([]byte(href)))
+
+			attrs = append(attrs, []string{"data-href", href})
+			if "" != node.TextMarkATitle {
+				attrs = append(attrs, []string{"data-title", node.TextMarkATitle})
+			}
+		} else if "inline-math" == typ {
+			attrs = append(attrs, []string{"data-subtype", "math"})
+			content := node.TextMarkInlineMathContent
+			if node.ParentIs(ast.NodeTableCell) {
+				// Improve the handling of inline-math containing `|` in the table https://github.com/siyuan-note/siyuan/issues/9227
+				content = strings.ReplaceAll(content, "|", "&#124;")
+				content = strings.ReplaceAll(content, "\n", "<br/>")
+			}
+			content = strings.ReplaceAll(content, editor.IALValEscNewLine, "\n")
+			attrs = append(attrs, []string{"data-content", content})
+			attrs = append(attrs, []string{"contenteditable", "false"})
+			attrs = append(attrs, []string{"class", "render-node"})
+		} else if "file-annotation-ref" == typ {
+			attrs = append(attrs, []string{"data-id", node.TextMarkFileAnnotationRefID})
+		} else if "inline-memo" == typ {
+			content := node.TextMarkInlineMemoContent
+			content = strings.ReplaceAll(content, editor.IALValEscNewLine, "\n")
+			attrs = append(attrs, []string{"data-inline-memo-content", content})
+		}
+	}
+	return
+}
+
+func (r *HtmlRenderer) spanNodeAttrs(node *ast.Node, attrs *[][]string) {
+	*attrs = append(*attrs, node.KramdownIAL...)
 }
